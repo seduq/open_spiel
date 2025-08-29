@@ -7,32 +7,6 @@ from typing import List, Optional, Set, Tuple
 from collections.abc import Sequence
 
 
-class Action(enum.IntEnum):
-    # 0-77 are reserved for cards
-    # The deck has 4 suits: hearts, diamonds, clubs, and spades
-    # Each suit has 14 cards: 1-10, Jack, Knight, Queen, King
-    # The deck has 22 trump cards, named 0-21
-    # Trump #0 is called Fou (Fool), #1 is called Petit (Small),
-    # #21 is called Monde (World)
-
-    FOOL = 56
-    PETIT = 57
-    MONDE = 77
-
-    # Bid Actions
-    PASS = 78
-    SMALL = 79
-    GUARD = 80
-    GUARD_WITHOUT = 81
-    GUARD_AGAINST = 82
-
-    # Declare Actions
-    DECLARE_NO_HANDFUL = 83
-    DECLARE_NO_SLAM = 84
-    DECLARE_HANDFUL = 85
-    DECLARE_SLAM = 86
-
-
 class Phase(enum.IntEnum):
     DEAL = 0  # Dealing phase
     BID = 1  # Contract phase
@@ -41,6 +15,30 @@ class Phase(enum.IntEnum):
     DECLARE_HANDFUL = 4  # Declare handful (poignee) phase
     PLAY = 5  # Trick-Taking phase
     TERMINAL = 6  # Game over
+
+
+class Bid(enum.IntEnum):
+    PASS = 78
+    SMALL = 79
+    GUARD = 80
+    GUARD_WITHOUT = 81
+    GUARD_AGAINST = 82
+
+
+_BID_MULTIPLIERS = {
+    Bid.PASS: 0,
+    Bid.SMALL: 1,
+    Bid.GUARD: 2,
+    Bid.GUARD_WITHOUT: 4,
+    Bid.GUARD_AGAINST: 6
+}
+
+
+class Declaration(enum.IntEnum):
+    DECLARE_NO_HANDFUL = 83
+    DECLARE_NO_SLAM = 84
+    DECLARE_HANDFUL = 85
+    DECLARE_SLAM = 86
 
 
 # ===============
@@ -59,10 +57,12 @@ _CARDS_PER_DEAL = 3
 # ===============
 # GAME ACTIONS
 # ===============
-_BIDS = frozenset([Action.PASS, Action.SMALL, Action.GUARD,
-                  Action.GUARD_WITHOUT, Action.GUARD_AGAINST])
-_DECLARATIONS = frozenset([Action.DECLARE_NO_HANDFUL, Action.DECLARE_NO_SLAM,
-                           Action.DECLARE_HANDFUL, Action.DECLARE_SLAM])
+_BIDS = frozenset(int(a) for a in [
+    Bid.PASS, Bid.SMALL, Bid.GUARD,
+    Bid.GUARD_WITHOUT, Bid.GUARD_AGAINST])
+_DECLARATIONS = frozenset(int(a) for a in [
+    Declaration.DECLARE_NO_HANDFUL, Declaration.DECLARE_NO_SLAM,
+    Declaration.DECLARE_HANDFUL, Declaration.DECLARE_SLAM])
 
 _DISTINCT_BIDS = len(_BIDS)
 _DISTINCT_DECLARATIONS = len(_DECLARATIONS)
@@ -134,8 +134,6 @@ _GAME_INFO = pyspiel.GameInfo(
     utility_sum=0.0,
     max_game_length=_GAME_LENGTH)
 
-_DEFAULT_OBS_TYPE = pyspiel.IIGObservationType(perfect_recall=True)
-
 
 class Suit(enum.IntEnum):
     HEARTS = 0
@@ -152,14 +150,32 @@ class Rank(enum.IntEnum):
     KING = 13
 
 
+class Trump(enum.IntEnum):
+    FOOL = 0
+    PETIT = 1
+    MONDE = 21
+
+
 _SUITS_STR = ["♥", "♦", "♣", "♠", "◘"]
 _CARDS_STR = ["A"] + [str(i) for i in range(2, 11)] + ["J", "C", "Q", "K"]
+_RANK_VALUES = {
+    Rank.JACK: 1.5,  # Jack
+    Rank.KNIGHT: 2.5,  # Knight
+    Rank.QUEEN: 3.5,  # Queen
+    Rank.KING: 4.5  # King
+}
+_TRUMP_VALUES = {
+    Trump.FOOL: 4.5,
+    Trump.PETIT: 4.5,
+    Trump.MONDE: 4.5
+}
 
 
 class Card:
     id: int
     rank: Rank | int
     suit: Suit
+    value: float
 
     def __init__(self, id: int) -> None:
         self.id = id
@@ -168,23 +184,36 @@ class Card:
         except ValueError:
             self.rank = id % _CARDS_PER_SUIT
         self.suit = Suit(id // _CARDS_PER_SUIT)
+        self.value = self._value()
+
+    def _value(self) -> float:
+        if self.suit == Suit.TRUMPS:
+            if self.id in _TRUMP_VALUES:
+                return _TRUMP_VALUES[Trump(self.id)]
+            return 0.5
+        if self.rank in _RANK_VALUES:
+            return _RANK_VALUES[Rank(self.rank)]
+        return 0.5
 
     def __str__(self) -> str:
         return f"{_SUITS_STR[self.suit]}{_CARDS_STR[self.rank]}"
 
 
-_FOOL = Card(Action.FOOL)
-_PETIT = Card(Action.PETIT)
-_MONDE = Card(Action.MONDE)
-
-
 @dataclass
 class Player:
     id: int = -1
-    bid: Action | None = None
-    slam: Action | None = None
-    handful: Action | None = None
+    bid: Bid | None = None
+    slam: Declaration | None = None
+    handful: Declaration | None = None
     hand: List[Card] = []
+
+    def bid_multiplier(self):
+        if self.bid is None:
+            return 0
+        if self.bid == Bid.PASS:
+            return 0
+        if self.bid == Bid.SMALL:
+            return 1
 
 
 @dataclass
@@ -234,13 +263,15 @@ class Trick:
 class FrenchTarotGame(pyspiel.Game):
     def __init__(self):
         super().__init__(_GAME_TYPE, _GAME_INFO)
+        self._DEFAULT_OBS_TYPE = pyspiel.IIGObservationType(
+            perfect_recall=True)
 
     def new_initial_state(self):
         return FrenchTarotState(self)
 
     def make_py_observer(self, iig_obs_type=None, params=None):
         return FrenchTarotObserver(
-            iig_obs_type or _DEFAULT_OBS_TYPE,
+            iig_obs_type or self._DEFAULT_OBS_TYPE,
             params)
 
 
@@ -253,7 +284,7 @@ class FrenchTarotState(pyspiel.State):
 
     _current: Player
     _discard: List[Card] = []
-    _history: List[Tuple[int, Action]] = []
+    _history: List[Tuple[int]] = []
     _phase: Phase
     _deck: Set[Card]
 
@@ -268,9 +299,9 @@ class FrenchTarotState(pyspiel.State):
         self._current = self.players[0]
         self._deck = set([Card(i) for i in _DECK])
         self._history = []
+        self._declares = []
 
     def current_player(self) -> int:
-        """Returns id of the next player to move, or TERMINAL if game is over."""
         if self._phase == Phase.TERMINAL:
             return pyspiel.PlayerId.TERMINAL
         elif self._phase == Phase.PLAY:
@@ -279,6 +310,7 @@ class FrenchTarotState(pyspiel.State):
 
     def _next_player(self) -> Player:
         cards_dealt = len(self._current.hand) % _CARDS_PER_DEAL
+        bids = [p.bid for p in self.players if p.bid is not None]
 
         if self._phase == Phase.TERMINAL:
             return self._current
@@ -293,9 +325,9 @@ class FrenchTarotState(pyspiel.State):
                 return self.dog
 
         if (self._phase == Phase.BID and
-                len(self.bids) == _NUM_PLAYERS):
+                len(bids) == _NUM_PLAYERS):
             self._phase = Phase.DOG
-            self.taker = max(self.players, key=lambda p: p.bid or Action.PASS)
+            self.taker = max(self.players, key=lambda p: p.bid or Bid.PASS)
             self.taker.hand.extend(self.dog.hand)
             self.dog.hand = []
             return self.taker
@@ -310,10 +342,10 @@ class FrenchTarotState(pyspiel.State):
             return self.taker
 
         if (self._phase == Phase.DECLARE_HANDFUL and
-                len(self.handful) == _NUM_PLAYERS):
+                len(self._declares) == _NUM_PLAYERS):
             self._phase = Phase.PLAY
             return self.taker
-        
+
         if (self._phase == Phase.PLAY and
                 len(self.tricks) == _NUM_TRICKS):
             self._phase = Phase.TERMINAL
@@ -324,7 +356,6 @@ class FrenchTarotState(pyspiel.State):
         return self.players[next_index]
 
     def _legal_actions(self, player: int) -> List[int]:
-        """Returns a list of legal actions, sorted in ascending order."""
         assert self.current_player() >= 0
         if self._phase == Phase.DEAL:
             return self._legal_actions_deal()
@@ -339,7 +370,6 @@ class FrenchTarotState(pyspiel.State):
         return []
 
     def _apply_action(self, action: int) -> None:
-        """Applies the specified action to the state."""
         if self._phase == Phase.DEAL:
             self._apply_action_deal(action)
         elif self._phase == Phase.BID:
@@ -355,16 +385,16 @@ class FrenchTarotState(pyspiel.State):
         self._current = self._next_player()
 
     def _action_to_string(self, player: int, action: int) -> str:
-        """Action -> string."""
         assert action >= 0 and action < _DISTINCT_ACTIONS
         if action < _DECK_SIZE:
             return f"[P{player}, {Card(action)}]"
-        if action in _BIDS or action in _DECLARATIONS:
-            return f"[P{player}, {Action(action).name}]"
+        if action in _BIDS:
+            return f"[P{player}, {Bid(action).name}]"
+        if action in _DECLARATIONS:
+            return f"[P{player}, {Declaration(action).name}]"
         return "Unknown"
 
     def chance_outcomes(self) -> List[Tuple[int, float]]:
-        """Returns a list of possible outcomes for the current chance node."""
         assert self.current_player() == pyspiel.PlayerId.CHANCE
         if self._phase == Phase.DEAL:
             return self._chance_deal_actions()
@@ -375,12 +405,66 @@ class FrenchTarotState(pyspiel.State):
         return []
 
     def is_terminal(self) -> bool:
-        """Returns True if the game is over."""
         return self._phase == Phase.TERMINAL
 
+    # ===============
+    # Scoring
+    # ===============
+
     def returns(self) -> List[float]:
-        """Total reward for each player over the course of the game so far."""
         return [0.0 for _ in range(_NUM_PLAYERS)]
+
+    def _base_score(self) -> Tuple[float, bool]:
+        assert self.taker.bid is not None
+        points = 0
+        bouts = 0
+        for trick in self.tricks:
+            if trick._winner == self.taker:
+                for card in trick.cards:
+                    if card.id in [Trump.FOOL, Trump.PETIT, Trump.MONDE]:
+                        bouts += 1
+
+        required_points = _POINTS_REQUIRED_PER_BOUTS[bouts]
+        points += (sum([card.value
+                        for trick in self.tricks for card in trick.cards]))
+        if self.taker.bid == Bid.GUARD_WITHOUT:
+            points += sum([card.value for card in self.dog.hand])
+        elif self.taker.bid != Bid.GUARD_AGAINST:
+            points += sum([card.value for card in self._discard])
+        required = True if (points - required_points) >= 0 else False
+        score = 25 + abs(points - required_points)
+        return score, required
+
+    def _total_score(self):
+        assert self.taker.bid is not None
+        assert self._phase == Phase.TERMINAL
+        points, required = self._base_score()
+        handful_bonus = 0
+        if self.taker.handful == Declaration.DECLARE_HANDFUL:
+            trumps = sum(1 for card in self.taker.hand
+                         if card.suit == Suit.TRUMPS)
+            handful = 0
+            for _, threshold in enumerate(_HANDFUL_THRESHOLD):
+                if trumps >= threshold:
+                    handful += 1
+            handful_bonus += _HANDFUL_BONUS[handful]
+        slam_bonus = 0
+        tricks_won = len(
+            [1 for trick in self.tricks if trick._winner == self.taker]) == _NUM_TRICKS
+        if tricks_won == _NUM_TRICKS:
+            if self.taker.slam == Declaration.DECLARE_SLAM:
+                slam_bonus += 400
+            else:
+                slam_bonus += 200
+        elif self.taker.slam == Declaration.DECLARE_SLAM:
+            if required:
+                slam_bonus -= 400
+            else:
+                slam_bonus = 400
+        required = 1 if required else -1
+        score = required * (points * _BID_MULTIPLIERS[self.taker.bid] +
+                            handful_bonus + slam_bonus)
+        return score
 
     # ===============
     # Legal Actions
@@ -388,13 +472,12 @@ class FrenchTarotState(pyspiel.State):
 
     def _legal_actions_bid(self) -> List[int]:
         """Returns a list of legal actions for the bidding phase."""
-        legal_bids = [Action.PASS, Action.GUARD,
-                      Action.GUARD_WITHOUT, Action.GUARD_AGAINST]
+        legal_bids = _BIDS
         bids = [player.bid for player in self.players if player.bid is not None]
-        max_bid = max(bids) if bids else Action.PASS
+        max_bid = max(bids) if bids else Bid.PASS
         legal_bids = [bid for bid in legal_bids if bid > max_bid]
-        if Action.PASS not in legal_bids:
-            legal_bids.append(Action.PASS)
+        if Bid.PASS not in legal_bids:
+            legal_bids.append(Bid.PASS)
         return [int(i) for i in legal_bids]
 
     def _legal_actions_deal(self) -> List[int]:
@@ -409,15 +492,15 @@ class FrenchTarotState(pyspiel.State):
 
     def _legal_actions_slam(self, player: int) -> List[int]:
         if self.players[player] == self.taker:
-            return [Action.DECLARE_NO_SLAM, Action.DECLARE_SLAM]
-        return [Action.DECLARE_NO_SLAM]
+            return [Declaration.DECLARE_NO_SLAM, Declaration.DECLARE_SLAM]
+        return [Declaration.DECLARE_NO_SLAM]
 
     def _legal_actions_handful(self, player: int) -> List[int]:
         trumps = sum(1 for card in self.players[player].hand
                      if card.suit == Suit.TRUMPS)
         if trumps >= _HANDFUL_THRESHOLD[0]:
-            return [Action.DECLARE_NO_HANDFUL, Action.DECLARE_HANDFUL]
-        return [Action.DECLARE_NO_HANDFUL]
+            return [Declaration.DECLARE_NO_HANDFUL, Declaration.DECLARE_HANDFUL]
+        return [Declaration.DECLARE_NO_HANDFUL]
 
     # ===============
     # Apply Actions
@@ -426,7 +509,7 @@ class FrenchTarotState(pyspiel.State):
         bids = sum(1 for p in self.players if p.bid != None)
         assert self._phase == Phase.BID
         assert bids < _NUM_PLAYERS
-        self._current.bid = Action(action)
+        self._current.bid = Bid(action)
 
     def _apply_action_deal(self, action: int) -> None:
         assert self._phase == Phase.DEAL
@@ -443,11 +526,12 @@ class FrenchTarotState(pyspiel.State):
 
     def _apply_action_slam(self, action: int) -> None:
         assert self._phase == Phase.DECLARE_SLAM
-        self._current.slam = Action(action)
+        self._current.slam = Declaration(action)
 
     def _apply_action_handful(self, action: int) -> None:
         assert self._phase == Phase.DECLARE_HANDFUL
-        self._current.handful = Action(action)
+        self._current.handful = Declaration(action)
+        self._declares.append(action)
 
     # ===============
     # Chance Actions
@@ -479,9 +563,9 @@ class FrenchTarotState(pyspiel.State):
         if not legal_cards:
             legal_cards = player.hand.copy()
 
-        if (_FOOL in player.hand and
-                _FOOL not in legal_cards):
-            legal_cards.append(_FOOL)
+        if (Card(Trump.FOOL) in player.hand and
+                Card(Trump.FOOL) not in legal_cards):
+            legal_cards.append(Card(Trump.FOOL))
         return [card.id for card in legal_cards]
 
     def _apply_action_play(self, action: int) -> None:
