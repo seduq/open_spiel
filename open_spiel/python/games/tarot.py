@@ -2,7 +2,7 @@
 import numpy as np
 import pyspiel  # type: ignore
 from enum import Enum, EnumMeta
-from typing import List, Literal, Optional, Set, Tuple
+from typing import List, Literal, Optional, Set, Tuple, Dict
 from collections.abc import Sequence
 from absl import app
 from absl import flags
@@ -115,6 +115,7 @@ class Player:
     slam: Declaration | None
     handful: Declaration | None
     hand: List[Card]
+    tricks: List['Trick']
 
     def __init__(self, id: int, name: str | None = None) -> None:
         self.id = id
@@ -126,6 +127,7 @@ class Player:
         self.slam = None
         self.handful = None
         self.hand = []
+        self.tricks = []
 
     def bid_multiplier(self):
         match self.bid:
@@ -143,7 +145,7 @@ class Player:
 
     def __str__(self) -> str:
         string = (
-            f"{self.name}\t{' | '.join([str(card) for card in sorted(self.hand, key=lambda c: c.id)])}\n"
+            f"{self.name}\tHand: [{' | '.join([str(card) for card in sorted(self.hand, key=lambda c: c.id)])}]\n"
             f"\t{self.bid} | {self.slam or Declaration.DECLARE_NO_SLAM} | {self.handful or Declaration.DECLARE_NO_HANDFUL}"
         )
         return string
@@ -153,23 +155,24 @@ class Player:
 
 
 class Trick:
-    cards: List[Tuple[Player, Card]]
+    plays: List[Tuple[Player, Card]]
     suit: Suit | None
     rank: Rank | Trump | None
     _winner: Player | None
 
     def __init__(self) -> None:
-        self.cards = []
+        self.plays = []
+        self.dict_plays = {}
         self.suit = None
         self.rank = None
         self._winner = None
 
-    def append(self, card: Card, player: Player):
+    def append(self, player: Player, card: Card):
         if (not (self.suit and
                  self.rank)):
             self.suit = card.suit
             self.rank = card.rank
-            self.cards.append((player, card))
+            self.plays.append((player, card))
             return
 
         suits = set(c.suit for c in player.hand)
@@ -181,8 +184,8 @@ class Trick:
                               c.rank > self.rank]
         discard = (follow_trump or has_suit or
                    (not follow_trump and not has_suit))
-        
-        assert len(self.cards) < _NUM_PLAYERS
+
+        assert len(self.plays) < _NUM_PLAYERS
         assert follow_trump or has_suit or discard
         if self.suit == Suit.TRUMPS and not discard:
             assert (card in higher_rank_trumps or
@@ -194,20 +197,45 @@ class Trick:
             self.suit = Suit.TRUMPS
             self.rank = card.rank
 
-        self.cards.append((player, card))
+        self.plays.append((player, card))
 
-    def get_winner(self) -> Player | None:
-        if len(self.cards) != _NUM_PLAYERS:
+    def remove(self, player: Player, card: Card) -> None:
+        for _play in self.plays:
+            _p, _c = _play
+            if player == _p and card == _c:
+                self.plays.remove(_play)
+                return
+
+    def replace(self, player: Player, card: Card) -> None:
+        for i, (p, c) in enumerate(self.plays):
+            if p == player and c == card:
+                self.plays[i] = (player, card)
+                return
+
+    def winner(self, player: Player | None = None) -> Player | None:
+        if self._winner:
+            return self._winner
+        if player:
+            self._winner = player
+            return self._winner
+        if len(self.plays) != _NUM_PLAYERS:
             return None
-        lead_cards = [(p, c) for p, c in self.cards if c.suit == self.suit]
+        lead_cards = [(p, c) for p, c in self.plays if c.suit == self.suit]
         self._winner, _ = max(lead_cards, key=lambda x: x[1].rank)
         return self._winner
 
+    def set_winner(self, player: Player) -> None:
+        self._winner = player
+
     def empty(self):
-        return len(self.cards) == 0
+        return len(self.plays) == 0
 
     def __str__(self) -> str:
-        return f"Trick[{"|".join(f"{p.name} {str(card)}" for p, card in self.cards)}]"
+        string = f"Trick[{" | ".join(f"{p.name} {str(card)}" for p,
+                                     card in self.plays)}]"
+        if self._winner:
+            string += f" | Winner: {self._winner.name}"
+        return string
 
     def __repr__(self) -> str:
         return str(self)
@@ -314,7 +342,7 @@ _GAME_INFO = pyspiel.GameInfo(
     max_game_length=_GAME_LENGTH)
 
 
-_SUITS_STR = ["♥", "♦", "♣", "♠", "♫"]
+_SUITS_STR = ["♥", "♦", "♣", "♠", "§"]
 _CARDS_STR = [str(i) for i in range(1, 11)] + ["J", "C", "Q", "K"]
 _TRUMP_STR = [str(i) for i in range(0, 22)]
 _CARD_VALUES = {
@@ -328,6 +356,9 @@ _CARD_VALUES = {
     Trump.PETIT: 4.5,
     Trump.MONDE: 4.5,
 }
+_SUIT_CARDS = 56
+_FOOL = Card(_SUIT_CARDS + Trump.FOOL)
+_PETIT = Card(_SUIT_CARDS + Trump.PETIT)
 
 
 class FrenchTarotGame(pyspiel.Game):
@@ -357,6 +388,10 @@ class FrenchTarotState(pyspiel.State):
     _history: List[Tuple[int]]
     _phase: Phase
     _deck: List[Card]
+    _fool_paid: bool
+    _fool_trick: Trick | None
+    _fool_player: Player | None
+    _petit_au_bout: int
 
     def __init__(self, game):
         super().__init__(game)
@@ -374,6 +409,8 @@ class FrenchTarotState(pyspiel.State):
         self._history = []
         self._declares = []
         self._discard = []
+        self._fool_paid = False
+        self._petit_au_bout = 0
 
     def current_player(self) -> int:
         if self._phase == Phase.TERMINAL:
@@ -385,7 +422,7 @@ class FrenchTarotState(pyspiel.State):
     def _next_player(self) -> Player:
         cards_dealt = len(self._current.hand) % _CARDS_PER_DEAL
         bids = [p.bid for p in self.players if p.bid is not None]
-        winner = self.trick.get_winner()
+        winner = self.trick.winner()
 
         if self._phase == Phase.TERMINAL:
             return self._current
@@ -431,7 +468,12 @@ class FrenchTarotState(pyspiel.State):
         if self._phase == Phase.PLAY:
             if (len(self.tricks) == _NUM_TRICKS):
                 self._phase = Phase.TERMINAL
-                return self._current
+                self._settle_petit_au_bout()
+                self._settle_fool()
+                if not self.dog.hand:
+                    self.dog.hand = self._discard
+                    self._discard = []
+                return self.taker
             if winner:
                 self.trick = Trick()
                 return winner
@@ -509,28 +551,42 @@ class FrenchTarotState(pyspiel.State):
     # ===============
 
     def returns(self) -> List[float]:
-        return [0.0 for _ in range(_NUM_PLAYERS)]
+        taker_points = self._total_score() * (_NUM_PLAYERS - 1)
+        defenders_points = -self._total_score()
+        results: List[float] = []
+        for player in self.players:
+            if player == self.taker:
+                results.append(taker_points)
+            else:
+                results.append(defenders_points)
+        return results
 
-    def _base_score(self) -> Tuple[float, bool]:
+    def _base_score(self, full_information: bool) -> Tuple[float, bool]:
         assert self.taker.bid is not None
         pile = [c for trick in self.tricks for _,
-                c in trick.cards if trick.get_winner() == self.taker]
+                c in trick.plays if trick.winner() == self.taker]
         points = sum(c.value for c in pile)
         bouts = sum(1 for c in pile if c.id in [
                     Trump.FOOL, Trump.PETIT, Trump.MONDE])
         required_points = _POINTS_REQUIRED_PER_BOUTS[bouts]
 
-        if self.taker.bid != Bid.GUARD_AGAINST:
+        bid = self.taker.bid
+        should_count_dog = (
+            (bid != Bid.GUARD_WITHOUT and bid != Bid.GUARD_AGAINST) or
+            (bid == Bid.GUARD_WITHOUT and full_information)
+        )
+
+        if (should_count_dog):
             points += sum([card.value for card in
                            [*self._discard, *self.dog.hand]])
         required = True if (points - required_points) >= 0 else False
         score = 25 + abs(points - required_points)
         return score, required
 
-    def _total_score(self):
+    def _total_score(self) -> float:
         assert self.taker.bid is not None
         assert self._phase == Phase.TERMINAL
-        points, required = self._base_score()
+        points, required = self._base_score(True)
         handful_bonus = 0
         if self.taker.handful == Declaration.DECLARE_HANDFUL:
             trumps = sum(1 for card in self.taker.hand
@@ -553,6 +609,7 @@ class FrenchTarotState(pyspiel.State):
                 slam_bonus -= 400
             else:
                 slam_bonus = 400
+        points += self._petit_au_bout
         required = 1 if required else -1
         score = required * (points * _BID_MULTIPLIERS[self.taker.bid] +
                             handful_bonus + slam_bonus)
@@ -665,22 +722,83 @@ class FrenchTarotState(pyspiel.State):
         if len(legal_cards) == 0:
             legal_cards = player.hand
 
-        fool = Card(Trump.FOOL)
-        if (fool in player.hand and
-                fool not in legal_cards):
-            legal_cards.append(fool)
+        if (_FOOL in player.hand and
+                _FOOL not in legal_cards):
+            legal_cards.append(_FOOL)
         return [card.id for card in legal_cards]
 
     def _apply_action_play(self, card: Card) -> None:
         assert self._phase == Phase.PLAY
         assert card in self._current.hand
-        self.trick.append(card, self._current)
+        self.trick.append(self._current, card)
         self._current.hand.remove(card)
-        winner = self.trick.get_winner()
+        winner = self.trick.winner()
         if winner is not None:
-            print(self.trick)
             self._current = winner
             self.tricks.append(self.trick)
+            winner.tricks.append(self.trick)
+        if card == _FOOL:
+            self._fool_trick = self.trick
+            self._fool_player = self._current
+
+    # ===============
+    # Util Functions
+    # ===============
+
+    def _settle_fool(self) -> None:
+        assert self._phase == Phase.TERMINAL
+        assert self._fool_paid is False
+        assert self._fool_trick is not None
+        assert self._fool_player is not None
+
+        _trick = Trick()
+        _trick.append(self._fool_player, _FOOL)
+        _trick.winner(self._fool_player)
+
+        self._fool_player.tricks.append(_trick)
+        replacement = self._find_replacement(
+            self._fool_trick, self._fool_player)
+        self._fool_trick.replace(self._fool_player, replacement)
+        self._fool_paid = True
+
+    def _settle_petit_au_bout(self) -> None:
+        assert self._phase == Phase.TERMINAL
+        last_trick = self.tricks[-1]
+        if self.tricks and last_trick and _PETIT in [card for _, card in last_trick.plays]:
+            taker_won_trick = last_trick.winner() == self.taker
+            _, taker_won = self._base_score(False)
+            if taker_won_trick and taker_won:
+                self._petit_au_bout = 10
+            elif not taker_won_trick and taker_won:
+                self._petit_au_bout = -10
+            elif not taker_won_trick and not taker_won:
+                self._petit_au_bout = 10
+            else:
+                self._petit_au_bout = 0
+
+    def _find_replacement(self, trick: Trick, fool: Player) -> Card:
+        winner = trick.winner()
+        assert winner is not None
+        fool_tricks = [(_trick, card) for _trick in fool.tricks
+                       for _player, card in _trick.plays if _player == fool and
+                       card.value == 0.5 and trick != _trick]
+        if fool_tricks:
+            _trick, card = fool_tricks[0]
+            _trick.remove(fool, card)
+            return card
+        raise ValueError("No replacement card found for the fool")
+
+    def __str__(self) -> str:
+        string = ""
+        _players = self.players + [self.dog]
+        for player in _players:
+            string += f"{str(player)}\n"
+            string += f"\t{f"{'\n\t'.join(map(str, player.tricks) if player.tricks else "")}"}\n"
+        string += "\nResults:\n"
+        results = self.returns()
+        for player_idx, player in enumerate(self.players):
+            string += f"{player.name}: {results[player_idx]}\n"
+        return string
 
 
 class FrenchTarotObserver(pyspiel.Observer):
@@ -714,13 +832,7 @@ pyspiel.register_game(_GAME_TYPE, FrenchTarotGame)
 def main(_):
     game = pyspiel.load_game(_GAME_NAME)
     state = game.new_initial_state()
-    phase = state._phase
     while not state.is_terminal():
-        if state._phase == Phase.PLAY and phase != Phase.PLAY:
-            for players in state.players:
-                print(players)
-                print("\n")
-        phase = state._phase
         actions = state.legal_actions()
         player = state.current_player()
         if player == pyspiel.PlayerId.CHANCE:
@@ -732,11 +844,7 @@ def main(_):
             f"Action: {state.action_to_string(action)}")
         state.apply_action(action)
     print("=" * 30)
-    print("Game Over")
-    for tricks in state.tricks:
-        print(tricks)
-    print("=" * 30)
-    print(state.returns())
+    print(state)
 
 
 if __name__ == "__main__":
