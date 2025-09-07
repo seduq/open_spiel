@@ -60,6 +60,7 @@ EXPECTED_GAMES = frozenset([
     "einstein_wurfelt_nicht",
     "euchre",
     "first_sealed_auction",
+    "french_tarot",
     "gin_rummy",
     "go",
     "goofspiel",

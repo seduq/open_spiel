@@ -80,6 +80,8 @@ set(GAME_SOURCES
   euchre/euchre.h
   first_sealed_auction/first_sealed_auction.cc
   first_sealed_auction/first_sealed_auction.h
+  french_tarot/french_tarot.cc
+  french_tarot/french_tarot.h
   gin_rummy/gin_rummy.cc
   gin_rummy/gin_rummy.h
   gin_rummy/gin_rummy_utils.cc
@@ -294,6 +296,10 @@ add_library(bridge_double_dummy_solver OBJECT
 )
 target_include_directories (bridge_double_dummy_solver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(bridge_double_dummy_solver PUBLIC DDS_NO_STATIC_INIT)
+
+add_executable(french_tarot_test french_tarot/french_tarot_test.cc ${OPEN_SPIEL_OBJECTS}
+               $<TARGET_OBJECTS:tests>)
+add_test(french_tarot_test french_tarot_test)
 
 add_executable(2048_test twenty_forty_eight/2048_test.cc ${OPEN_SPIEL_OBJECTS}
                $<TARGET_OBJECTS:tests>)

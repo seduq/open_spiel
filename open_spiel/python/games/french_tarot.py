@@ -153,6 +153,11 @@ class Player:
     def __repr__(self) -> str:
         return str(self)
 
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, Player):
+            return False
+        return (self.id == value.id)
+
 
 class Trick:
     plays: List[Tuple[Player, Card]]
@@ -160,12 +165,13 @@ class Trick:
     rank: Rank | Trump | None
     _winner: Player | None
 
-    def __init__(self) -> None:
+    def __init__(self, num_players: int) -> None:
         self.plays = []
         self.dict_plays = {}
         self.suit = None
         self.rank = None
         self._winner = None
+        self.num_players = num_players
 
     def append(self, player: Player, card: Card):
         if (not (self.suit and
@@ -185,7 +191,7 @@ class Trick:
         discard = (follow_trump or has_suit or
                    (not follow_trump and not has_suit))
 
-        assert len(self.plays) < _NUM_PLAYERS
+        assert len(self.plays) < _DEFAULT_NUM_PLAYERS
         assert follow_trump or has_suit or discard
         if self.suit == Suit.TRUMPS and not discard:
             assert (card in higher_rank_trumps or
@@ -193,23 +199,23 @@ class Trick:
         elif has_suit and not discard:
             assert card.suit == self.suit
 
-        if follow_trump:
+        if follow_trump and card != _FOOL:
             self.suit = Suit.TRUMPS
             self.rank = card.rank
 
         self.plays.append((player, card))
 
-    def remove(self, player: Player, card: Card) -> None:
-        for _play in self.plays:
+    def remove(self, card: Card) -> None:
+        for i, _play in enumerate(self.plays):
             _p, _c = _play
-            if player == _p and card == _c:
-                self.plays.remove(_play)
+            if card == _c:
+                self.plays.pop(i)
                 return
 
-    def replace(self, player: Player, card: Card) -> None:
-        for i, (p, c) in enumerate(self.plays):
-            if p == player and c == card:
-                self.plays[i] = (player, card)
+    def replace(self, player: Player, card: Card, new_card: Card) -> None:
+        for i, (_, c) in enumerate(self.plays):
+            if c == card:
+                self.plays[i] = (player, new_card)
                 return
 
     def winner(self, player: Player | None = None) -> Player | None:
@@ -218,10 +224,11 @@ class Trick:
         if player:
             self._winner = player
             return self._winner
-        if len(self.plays) != _NUM_PLAYERS:
+        if len(self.plays) != self.num_players:
             return None
         lead_cards = [(p, c) for p, c in self.plays if c.suit == self.suit]
-        self._winner, _ = max(lead_cards, key=lambda x: x[1].rank)
+        self._winner, _ = max(
+            lead_cards, key=lambda x: x[1].rank if x[1] != _FOOL else -1)
         return self._winner
 
     def set_winner(self, player: Player) -> None:
@@ -240,19 +247,28 @@ class Trick:
     def __repr__(self) -> str:
         return str(self)
 
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, Trick):
+            return False
+        return all(p1 == p2 and c1 == c2 for (p1, c1), (p2, c2)
+                   in zip(self.plays, value.plays))
+
 
 # ===============
 # GAME CONSTANTS
 # ===============
-_NUM_PLAYERS = 4
+_DEFAULT_NUM_PLAYERS = 4
+_MAX_NUM_PLAYERS = 4
+_MIN_NUM_PLAYERS = 3
 _DECK_SIZE = 78
 _DOG_SIZE = 6
 _DOG_ID = 4
 _DECK = frozenset(list(range(_DECK_SIZE)))
-_HAND_SIZE = 18
-_NUM_TRICKS = _HAND_SIZE
+_NUM_TRICKS = {
+    _MIN_NUM_PLAYERS: 24,
+    _MAX_NUM_PLAYERS: 18
+}
 _CARDS_PER_SUIT = 14
-_CARDS_PER_DEAL = 3
 _BID_MULTIPLIERS = {
     Bid.PASS: 0,
     Bid.SMALL: 1,
@@ -285,7 +301,7 @@ _HANDFUL_THRESHOLD = [10, 13, 15]
 _HANDFUL_BONUS = [20, 30, 40]
 
 # Points requirements per ends (bouts) cards
-# Bouts are trump #0 "fool", #1 "petit" and #21 "monde"
+# Bouts are trump #0 "fou", #1 "petit" and #21 "monde"
 _POINTS_REQUIRED_PER_BOUTS = [
     51,
     46,
@@ -298,14 +314,13 @@ _POINTS_REQUIRED_PER_BOUTS = [
 # ===============
 _TENSOR_TRICK = 7
 _TENSOR_DEAL = _DECK_SIZE
-_TENSOR_BID = _NUM_PLAYERS
+_TENSOR_BID = _DEFAULT_NUM_PLAYERS
 _TENSOR_DOG = _DOG_SIZE
 _TENSOR_DECLARE_SLAM = 1
-_TENSOR_DECLARE_HANDFUL = _NUM_PLAYERS
+_TENSOR_DECLARE_HANDFUL = _DEFAULT_NUM_PLAYERS
 _TENSOR_DECLARATIONS = _TENSOR_DECLARE_HANDFUL + _TENSOR_DECLARE_SLAM
-_TENSOR_PLAY = _NUM_TRICKS * _TENSOR_TRICK
-_TENSOR_SIZE = (_TENSOR_DEAL + _TENSOR_BID + _TENSOR_DOG +
-                _TENSOR_DECLARATIONS + _TENSOR_PLAY)
+_BASE_TENSOR_SIZE = (_TENSOR_DEAL + _TENSOR_BID + _TENSOR_DOG +
+                _TENSOR_DECLARATIONS)
 
 # Game is consist of 5 phase actions
 # 1. Dealing of 78 cards
@@ -313,10 +328,12 @@ _TENSOR_SIZE = (_TENSOR_DEAL + _TENSOR_BID + _TENSOR_DOG +
 # 3. Discarding of 6 cards, if applicable
 # 4. Declaring yes or handful and/or slam
 # 5. Playing the tricks
-_GAME_LENGTH = (_DECK_SIZE + _NUM_PLAYERS + _DOG_SIZE +
-                _NUM_PLAYERS * 2 + _DECK_SIZE)
-_GAME_NAME = "french_tarot"
+_GAME_LENGTH = (_DECK_SIZE + _DEFAULT_NUM_PLAYERS + _DOG_SIZE +
+                _DEFAULT_NUM_PLAYERS * 2 + _DECK_SIZE)
+_GAME_NAME = "python_french_tarot"
 _GAME_FULL_NAME = "French Tarot"
+_GAME_MIN_UTILITY = -6
+_GAME_MAX_UTILITY = 6
 _GAME_TYPE = pyspiel.GameType(
     short_name=_GAME_NAME,
     long_name=_GAME_FULL_NAME,
@@ -325,37 +342,44 @@ _GAME_TYPE = pyspiel.GameType(
     information=pyspiel.GameType.Information.IMPERFECT_INFORMATION,
     utility=pyspiel.GameType.Utility.ZERO_SUM,
     reward_model=pyspiel.GameType.RewardModel.TERMINAL,
-    max_num_players=_NUM_PLAYERS,
-    min_num_players=_NUM_PLAYERS,
+    min_num_players=_MIN_NUM_PLAYERS,
+    max_num_players=_MAX_NUM_PLAYERS,
     provides_information_state_string=True,
     provides_information_state_tensor=True,
     provides_observation_string=True,
-    provides_observation_tensor=True)
+    provides_observation_tensor=True,
+    parameter_specification={
+        "players": _DEFAULT_NUM_PLAYERS,
+    },
+)
 
 _GAME_INFO = pyspiel.GameInfo(
     num_distinct_actions=_DISTINCT_ACTIONS,
     max_chance_outcomes=_DECK_SIZE,
-    num_players=_NUM_PLAYERS,
-    min_utility=-1.0,
-    max_utility=1.0,
+    num_players=_DEFAULT_NUM_PLAYERS,
+    min_utility=_GAME_MIN_UTILITY,
+    max_utility=_GAME_MAX_UTILITY,
     utility_sum=0.0,
-    max_game_length=_GAME_LENGTH)
+    max_game_length=_GAME_LENGTH
+)
 
 
 _SUITS_STR = ["♥", "♦", "♣", "♠", "§"]
 _CARDS_STR = [str(i) for i in range(1, 11)] + ["J", "C", "Q", "K"]
 _TRUMP_STR = [str(i) for i in range(0, 22)]
-_CARD_VALUES = {
+_CARD_VALUES: Dict[Rank | Trump, float] = {
     # Suits
     Rank.JACK: 1.5,
     Rank.KNIGHT: 2.5,
     Rank.QUEEN: 3.5,
     Rank.KING: 4.5,
+
     # Trumps
     Trump.FOOL: 4.5,
     Trump.PETIT: 4.5,
     Trump.MONDE: 4.5,
 }
+
 _SUIT_CARDS = 56
 _FOOL = Card(_SUIT_CARDS + Trump.FOOL)
 _PETIT = Card(_SUIT_CARDS + Trump.PETIT)
@@ -366,6 +390,10 @@ class FrenchTarotGame(pyspiel.Game):
         super().__init__(_GAME_TYPE, _GAME_INFO, params or dict())
         self._DEFAULT_OBS_TYPE = pyspiel.IIGObservationType(
             perfect_recall=True)
+        if params:
+            players = params.get("players", _DEFAULT_NUM_PLAYERS)
+            self.num_players_ = players
+            print(players, self.num_players())
 
     def new_initial_state(self):
         return FrenchTarotState(self)
@@ -373,6 +401,7 @@ class FrenchTarotGame(pyspiel.Game):
     def make_py_observer(self, iig_obs_type=None, params=None):
         return FrenchTarotObserver(
             iig_obs_type or self._DEFAULT_OBS_TYPE,
+            self.num_players(),
             params)
 
 
@@ -388,28 +417,35 @@ class FrenchTarotState(pyspiel.State):
     _history: List[Tuple[int]]
     _phase: Phase
     _deck: List[Card]
-    _fool_paid: bool
     _fool_trick: Trick | None
     _fool_player: Player | None
+    _fool_replacement: Card | None
+    _replacement_trick: Trick | None
+    _fool_replacement: Card | None
     _petit_au_bout: int
 
     def __init__(self, game):
         super().__init__(game)
+        self._num_players = game.num_players()
+        self._num_tricks = _NUM_TRICKS[self._num_players]
+        print(self._num_tricks, self._num_players)
         self.reset()
 
     def reset(self):
-        self.players = [Player(i) for i in range(_NUM_PLAYERS)]
+        self.players = [Player(i) for i in range(self._num_players)]
         self.dog = Player(_DOG_ID, name="Dog")
-        self.trick = Trick()
+        self.trick = Trick(self._num_players)
         self.tricks = []
-
         self._phase = Phase.DEAL
         self._current = self.players[0]
         self._deck = [Card(i) for i in _DECK]
         self._history = []
         self._declares = []
         self._discard = []
-        self._fool_paid = False
+        self._fool_trick = None
+        self._fool_player = None
+        self._replacement_trick = None
+        self._fool_replacement = None
         self._petit_au_bout = 0
 
     def current_player(self) -> int:
@@ -420,7 +456,8 @@ class FrenchTarotState(pyspiel.State):
         return pyspiel.PlayerId.CHANCE
 
     def _next_player(self) -> Player:
-        cards_dealt = len(self._current.hand) % _CARDS_PER_DEAL
+        cards_per_deal = 3 if self._num_players == 4 else 4
+        cards_dealt = len(self._current.hand) % cards_per_deal
         bids = [p.bid for p in self.players if p.bid is not None]
         winner = self.trick.winner()
 
@@ -440,8 +477,9 @@ class FrenchTarotState(pyspiel.State):
                 return self.dog
 
         if (self._phase == Phase.BID and
-                len(bids) == _NUM_PLAYERS):
+                len(bids) == _DEFAULT_NUM_PLAYERS):
             self.taker = max(self.players, key=lambda p: p.bid or Bid.PASS)
+            self.taker.name += "*"
             if (self.taker.bid == Bid.GUARD_AGAINST or
                     self.taker.bid == Bid.GUARD_WITHOUT):
                 self._phase = Phase.DECLARE_SLAM
@@ -461,12 +499,12 @@ class FrenchTarotState(pyspiel.State):
             return self.taker
 
         if (self._phase == Phase.DECLARE_HANDFUL and
-                len(self._declares) == _NUM_PLAYERS):
+                len(self._declares) == _DEFAULT_NUM_PLAYERS):
             self._phase = Phase.PLAY
             return self.taker
 
         if self._phase == Phase.PLAY:
-            if (len(self.tricks) == _NUM_TRICKS):
+            if (len(self.tricks) == self._num_tricks):
                 self._phase = Phase.TERMINAL
                 self._settle_petit_au_bout()
                 self._settle_fool()
@@ -475,11 +513,11 @@ class FrenchTarotState(pyspiel.State):
                     self._discard = []
                 return self.taker
             if winner:
-                self.trick = Trick()
+                self.trick = Trick(self._num_players)
                 return winner
 
         current_index = self.players.index(self._current)
-        next_index = (current_index + 1) % _NUM_PLAYERS
+        next_index = (current_index + 1) % _DEFAULT_NUM_PLAYERS
         return self.players[next_index]
 
     def _legal_actions(self, player: int) -> List[int]:
@@ -547,75 +585,6 @@ class FrenchTarotState(pyspiel.State):
         return self._phase == Phase.TERMINAL
 
     # ===============
-    # Scoring
-    # ===============
-
-    def returns(self) -> List[float]:
-        taker_points = self._total_score() * (_NUM_PLAYERS - 1)
-        defenders_points = -self._total_score()
-        results: List[float] = []
-        for player in self.players:
-            if player == self.taker:
-                results.append(taker_points)
-            else:
-                results.append(defenders_points)
-        return results
-
-    def _base_score(self, full_information: bool) -> Tuple[float, bool]:
-        assert self.taker.bid is not None
-        pile = [c for trick in self.tricks for _,
-                c in trick.plays if trick.winner() == self.taker]
-        points = sum(c.value for c in pile)
-        bouts = sum(1 for c in pile if c.id in [
-                    Trump.FOOL, Trump.PETIT, Trump.MONDE])
-        required_points = _POINTS_REQUIRED_PER_BOUTS[bouts]
-
-        bid = self.taker.bid
-        should_count_dog = (
-            (bid != Bid.GUARD_WITHOUT and bid != Bid.GUARD_AGAINST) or
-            (bid == Bid.GUARD_WITHOUT and full_information)
-        )
-
-        if (should_count_dog):
-            points += sum([card.value for card in
-                           [*self._discard, *self.dog.hand]])
-        required = True if (points - required_points) >= 0 else False
-        score = 25 + abs(points - required_points)
-        return score, required
-
-    def _total_score(self) -> float:
-        assert self.taker.bid is not None
-        assert self._phase == Phase.TERMINAL
-        points, required = self._base_score(True)
-        handful_bonus = 0
-        if self.taker.handful == Declaration.DECLARE_HANDFUL:
-            trumps = sum(1 for card in self.taker.hand
-                         if card.suit == Suit.TRUMPS)
-            handful = 0
-            for _, threshold in enumerate(_HANDFUL_THRESHOLD):
-                if trumps >= threshold:
-                    handful += 1
-            handful_bonus += _HANDFUL_BONUS[handful]
-        slam_bonus = 0
-        tricks_won = len(
-            [1 for trick in self.tricks if trick._winner == self.taker]) == _NUM_TRICKS
-        if tricks_won == _NUM_TRICKS:
-            if self.taker.slam == Declaration.DECLARE_SLAM:
-                slam_bonus += 400
-            else:
-                slam_bonus += 200
-        elif self.taker.slam == Declaration.DECLARE_SLAM:
-            if required:
-                slam_bonus -= 400
-            else:
-                slam_bonus = 400
-        points += self._petit_au_bout
-        required = 1 if required else -1
-        score = required * (points * _BID_MULTIPLIERS[self.taker.bid] +
-                            handful_bonus + slam_bonus)
-        return score
-
-    # ===============
     # Legal Actions
     # ===============
 
@@ -657,7 +626,7 @@ class FrenchTarotState(pyspiel.State):
     def _apply_action_bid(self, bid: Bid) -> None:
         bids = sum(1 for p in self.players if p.bid != None)
         assert self._phase == Phase.BID
-        assert bids < _NUM_PLAYERS
+        assert bids < _DEFAULT_NUM_PLAYERS
         self._current.bid = bid
 
     def _apply_action_deal(self, card: Card) -> None:
@@ -706,9 +675,9 @@ class FrenchTarotState(pyspiel.State):
         declarations = self._legal_actions_handful(self._current.id)
         return [(declaration, 1.0 / len(declarations)) for declaration in declarations]
 
-    # ===============
-    # Play Actions
-    # ===============
+    # ==============================
+    # Legal and Apply Play Actions
+    # ==============================
 
     def _legal_actions_play(self, player_idx: int) -> List[int]:
         player = self.players[player_idx]
@@ -734,12 +703,88 @@ class FrenchTarotState(pyspiel.State):
         self._current.hand.remove(card)
         winner = self.trick.winner()
         if winner is not None:
-            self._current = winner
             self.tricks.append(self.trick)
+
+            # Extremely rare case where the taker plays the fool
+            # on the last trick and won all the other tricks
+            # Taker automatically wins the last trick
+            # and fool does not need to be settled
+            if (len(self.tricks) == self._num_tricks and
+                    len(self.taker.tricks) == self._num_tricks - 1):
+                taker_fool_last_trick = (self.taker, _FOOL) in self.trick.plays
+                if taker_fool_last_trick:
+                    self.trick.set_winner(self.taker)
+                    self.taker.tricks.append(self.trick)
+                    self._current = self.taker
+                    self._fool_player = None
+                    self._fool_trick = None
+                    return
+
             winner.tricks.append(self.trick)
+            self._current = winner
         if card == _FOOL:
             self._fool_trick = self.trick
             self._fool_player = self._current
+
+    # ===============
+    # Scoring
+    # ===============
+
+    def returns(self) -> List[float]:
+        if not self.is_terminal():
+            return [0.0 for _ in self.players]
+        taker_points = 6 if self._total_score() > 0 else -6
+        defenders_points = - taker_points / (self._num_players - 1)
+        results: List[float] = []
+        for player in self.players:
+            if player == self.taker:
+                results.append(taker_points)
+            else:
+                results.append(defenders_points)
+        return results
+
+    def _base_score(self, full_information: bool) -> Tuple[float, bool]:
+        assert self.taker.bid is not None
+        pile = [c for trick in self.tricks for _,
+                c in trick.plays if trick.winner() == self.taker]
+        points = sum(c.value for c in pile)
+        bouts = sum(1 for c in pile if c.id in [
+                    Trump.FOOL, Trump.PETIT, Trump.MONDE])
+        required_points = _POINTS_REQUIRED_PER_BOUTS[bouts]
+
+        bid = self.taker.bid
+        should_count_dog = (
+            (bid != Bid.GUARD_WITHOUT and bid != Bid.GUARD_AGAINST) or
+            (bid == Bid.GUARD_WITHOUT and full_information)
+        )
+
+        if (should_count_dog):
+            points += sum([card.value for card in
+                           [*self._discard, *self.dog.hand]])
+        taker_won = True if (points - required_points) >= 0 else False
+        score = 25 + abs(points - required_points)
+        return score, taker_won
+
+    def _total_score(self) -> float:
+        assert self.taker.bid is not None
+        assert self._phase == Phase.TERMINAL
+        points, taker_won = self._base_score(True)
+        handful_bonus = 0
+        if self.taker.handful == Declaration.DECLARE_HANDFUL:
+            trumps = sum(1 for card in self.taker.hand
+                         if card.suit == Suit.TRUMPS)
+            handful = 0
+            for _, threshold in enumerate(_HANDFUL_THRESHOLD):
+                if trumps >= threshold:
+                    handful += 1
+            handful_bonus += _HANDFUL_BONUS[handful]
+        slam_bonus = self._slam_bonus(taker_won)
+
+        points += self._petit_au_bout
+        taker_won = 1 if taker_won else -1
+        score = taker_won * (points * _BID_MULTIPLIERS[self.taker.bid] +
+                             handful_bonus + slam_bonus)
+        return score
 
     # ===============
     # Util Functions
@@ -747,24 +792,49 @@ class FrenchTarotState(pyspiel.State):
 
     def _settle_fool(self) -> None:
         assert self._phase == Phase.TERMINAL
-        assert self._fool_paid is False
-        assert self._fool_trick is not None
-        assert self._fool_player is not None
 
-        _trick = Trick()
+        if _FOOL not in self.dog.hand and not len(self.taker.tricks) == self._num_tricks:
+            assert self._fool_trick is not None
+            assert self._fool_player is not None
+
+        if not self._fool_trick or not self._fool_player:
+            return
+
+        self._replacement_trick, self._fool_replacement = self._find_replacement()
+
+        self._replacement_trick.remove(self._fool_replacement)
+        self._fool_trick.replace(
+            self._fool_player, _FOOL, self._fool_replacement)
+
+        _trick = Trick(self._num_players)
         _trick.append(self._fool_player, _FOOL)
         _trick.winner(self._fool_player)
-
         self._fool_player.tricks.append(_trick)
-        replacement = self._find_replacement(
-            self._fool_trick, self._fool_player)
-        self._fool_trick.replace(self._fool_player, replacement)
-        self._fool_paid = True
+
+    def _slam_bonus(self, taker_won: bool) -> float:
+        bonus = 0
+        tricks_won = len(
+            [1 for trick in self.tricks if trick._winner == self.taker]) == self._num_tricks
+        if tricks_won == self._num_tricks:
+            if self.taker.slam == Declaration.DECLARE_SLAM:
+                bonus += 400
+            else:
+                bonus += 200
+            if _PETIT in self.taker.tricks[-2].plays:
+                self._petit_au_bout = 10
+        elif self.taker.slam == Declaration.DECLARE_SLAM:
+            if taker_won:
+                bonus -= 400
+            else:
+                bonus = 400
+        return bonus
 
     def _settle_petit_au_bout(self) -> None:
         assert self._phase == Phase.TERMINAL
         last_trick = self.tricks[-1]
-        if self.tricks and last_trick and _PETIT in [card for _, card in last_trick.plays]:
+        slam = len(self.taker.tricks) == self._num_tricks
+        if (not slam and self.tricks and last_trick and
+                _PETIT in [card for _, card in last_trick.plays]):
             taker_won_trick = last_trick.winner() == self.taker
             _, taker_won = self._base_score(False)
             if taker_won_trick and taker_won:
@@ -773,20 +843,37 @@ class FrenchTarotState(pyspiel.State):
                 self._petit_au_bout = -10
             elif not taker_won_trick and not taker_won:
                 self._petit_au_bout = 10
+            elif taker_won_trick and not taker_won:
+                self._petit_au_bout = 10
             else:
                 self._petit_au_bout = 0
 
-    def _find_replacement(self, trick: Trick, fool: Player) -> Card:
-        winner = trick.winner()
-        assert winner is not None
-        fool_tricks = [(_trick, card) for _trick in fool.tricks
-                       for _player, card in _trick.plays if _player == fool and
-                       card.value == 0.5 and trick != _trick]
-        if fool_tricks:
-            _trick, card = fool_tricks[0]
-            _trick.remove(fool, card)
-            return card
+        # Extremely rare case where the taker plays the fool
+        # on the last trick and wins the trick
+        # Petit au bout is awarded if slam is achieved
+        # and petit is in the second last trick
+        taker_fool_last_trick = (self.taker, _FOOL) in last_trick.plays
+        last_trick = self.tricks[-2]
+        if (taker_fool_last_trick and slam and
+                _PETIT in [card for _, card in last_trick.plays]):
+            self._petit_au_bout = 10
+
+    def _find_replacement(self) -> Tuple[Trick, Card]:
+        assert self._fool_trick is not None
+        assert self._fool_player is not None
+        for _trick in self._fool_player.tricks:
+            if _trick == self._fool_trick:
+                continue
+            for _, card in _trick.plays:
+                if card.value == 0.5:
+                    return _trick, card
         raise ValueError("No replacement card found for the fool")
+
+    def _show_handful(self, player: Player) -> List[int]:
+        return [card.id for card in player.hand if card.suit == Suit.TRUMPS]
+
+    def _show_dog(self) -> List[int]:
+        return [card.id for card in self.dog.hand]
 
     def __str__(self) -> str:
         string = ""
@@ -794,20 +881,33 @@ class FrenchTarotState(pyspiel.State):
         for player in _players:
             string += f"{str(player)}\n"
             string += f"\t{f"{'\n\t'.join(map(str, player.tricks) if player.tricks else "")}"}\n"
-        string += "\nResults:\n"
-        results = self.returns()
-        for player_idx, player in enumerate(self.players):
-            string += f"{player.name}: {results[player_idx]}\n"
+        if self._fool_player and self._fool_replacement:
+            string += f"Fool: {self._fool_player.name}\n"
+            string += f"Fool Trick: {self._fool_trick}\n"
+            string += f"Replacement Trick: {self._replacement_trick}\n"
+            string += f"Replaced with: {self._fool_replacement}\n"
+        if self.is_terminal():
+            results = self.returns()
+            string += "\nResults:\n"
+            string += f"Taker: {self.taker.name}\n"
+            string += f"Bid: {self.taker.bid}\n"
+            string += f"Slam: {self.taker.slam or Declaration.DECLARE_NO_SLAM}\n"
+            string += f"Handful: {self.taker.handful or Declaration.DECLARE_NO_HANDFUL}\n"
+            string += f"Petit au bout: {self._petit_au_bout != 0}\n"
+            string += f"Base Score: {self._base_score(True)}\n"
+            for player_idx, player in enumerate(self.players):
+                string += f"{player.name}: {results[player_idx]}\n"
         return string
 
 
 class FrenchTarotObserver(pyspiel.Observer):
-    def __init__(self, iig_obs_type, params):
+    def __init__(self, iig_obs_type, num_players, params):
         """Initializes an empty observation tensor."""
-        if params:
-            raise ValueError(
-                f"Observation parameters not supported; passed {params}")
-        self.size = _TENSOR_SIZE
+        assert _MIN_NUM_PLAYERS <= num_players <= _MAX_NUM_PLAYERS
+        del params
+        self.num_players = num_players
+        self.hand_size = _NUM_TRICKS[num_players]
+        self.size = _BASE_TENSOR_SIZE + self.hand_size * _TENSOR_TRICK
         self.tensor = np.zeros(self.size, np.float32)
         self.dict = {}
 
@@ -827,25 +927,3 @@ class FrenchTarotObserver(pyspiel.Observer):
 
 
 pyspiel.register_game(_GAME_TYPE, FrenchTarotGame)
-
-
-def main(_):
-    game = pyspiel.load_game(_GAME_NAME)
-    state = game.new_initial_state()
-    while not state.is_terminal():
-        actions = state.legal_actions()
-        player = state.current_player()
-        if player == pyspiel.PlayerId.CHANCE:
-            outcomes, prob = zip(*state.chance_outcomes())
-            action = np.random.choice(outcomes, p=prob)
-        else:
-            action = np.random.choice(actions)
-        print(
-            f"Action: {state.action_to_string(action)}")
-        state.apply_action(action)
-    print("=" * 30)
-    print(state)
-
-
-if __name__ == "__main__":
-    app.run(main)
