@@ -31,13 +31,11 @@ namespace open_spiel
 {
   namespace french_tarot
   {
+
+#pragma region Game Parameters
+
     namespace
     {
-
-      // Default parameters.
-      constexpr int kDefaultPlayers = 4;
-
-      // Facts about the game
       const GameType kGameType{
           /*short_name=*/"french_tarot",
           /*long_name=*/"French Tarot",
@@ -46,14 +44,15 @@ namespace open_spiel
           GameType::Information::kImperfectInformation,
           GameType::Utility::kZeroSum,
           GameType::RewardModel::kTerminal,
-          /*max_num_players=*/4,
-          /*min_num_players=*/3,
+          /*max_num_players=*/kMaxNumPlayers,
+          /*min_num_players=*/kMinNumPlayers,
           /*provides_information_state_string=*/true,
           /*provides_information_state_tensor=*/true,
           /*provides_observation_string=*/true,
           /*provides_observation_tensor=*/true,
           /*parameter_specification=*/
-          {{"players", GameParameter(kDefaultPlayers)}},
+          {{"players", GameParameter(kMaxNumPlayers)},
+           {"rng_seed", GameParameter(-1)}},
           /*default_loadable=*/true,
           /*provides_factored_observation_string=*/true,
       };
@@ -66,8 +65,192 @@ namespace open_spiel
       REGISTER_SPIEL_GAME(kGameType, Factory);
 
       open_spiel::RegisterSingleTensorObserver single_tensor(kGameType.short_name);
-    } // namespace
+    } // namespace game register
 
+#pragma endregion
+#pragma region State Methods
+
+    /** @brief Constructor for French Tarot state.
+     *  @param game The game associated with this state.
+     */
+    FrenchTarotState::FrenchTarotState(std::shared_ptr<const Game> game)
+        : State(game), current_trick_(game->NumPlayers()),
+          phase_(Phase::Dealing), fool_player_(kInvalidPlayer),
+          fool_trick_(nullptr), replacement_trick_(nullptr), tricks_({}),
+          replacement_card_(-1), current_player_(0), taker_(kInvalidPlayer),
+          bid_(BidType::Pass), slam_bonus_(0.0), petit_au_bout_bonus_(0.0),
+          slam_declare_(Declare::NoSlam), know_cards_(kDeckSize, kInvalidPlayer),
+          player_declares_(game->NumPlayers(), Declare::NoSlam) {}
+
+    std::vector<double> FrenchTarotState::Returns() const
+    {
+      if (!IsTerminal())
+        return std::vector<double>(num_players_, 0.0);
+
+      std::vector<double> returns(num_players_);
+
+      auto score = PartialScore();
+      auto taker_won = score.first > 0.0;
+
+      auto taker_points = taker_won ? GetGame()->MaxUtility() : GetGame()->MinUtility();
+      auto defenders_points = -taker_points / (num_players_ - 1);
+
+      for (auto player = Player{0}; player < num_players_; ++player)
+      {
+        if (player == taker_)
+          returns[player] = taker_points;
+        else
+          returns[player] = defenders_points;
+      }
+      return returns;
+    }
+
+    /** @brief Computes the partial score for the taker.
+     *  @return A pair containing the score and a boolean indicating if the taker won.
+     *
+     *  @details This function calculates the score for the taker based on the cards
+     *  they have collected in tricks. It returns a pair where the first element is
+     *  the score (positive if the taker won, negative otherwise) and the second
+     *  element is a boolean indicating whether the taker won or not.
+     */
+    std::pair<double, bool> FrenchTarotState::PartialScore() const
+    {
+      // TODO: Implement the actual scoring logic based on the rules of French Tarot.
+      return std::make_pair(0.0, false);
+    }
+
+    int FrenchTarotState::CurrentPlayer() const
+    {
+      if (IsTerminal())
+        return kTerminalPlayerId;
+      if (phase_ != Phase::Playing)
+        return kChancePlayerId;
+      return current_player_;
+    }
+
+    void FrenchTarotState::DealCards()
+    {
+      auto game = std::static_pointer_cast<const FrenchTarotGame>(GetGame());
+      std::iota(deck_.begin(), deck_.end(), 0);
+      std::shuffle(deck_.begin(), deck_.end(), *game->RNG());
+      std::copy(deck_.begin(), deck_.begin() + kDogSize, dog_.begin());
+      auto it = deck_.begin() + kDogSize;
+      auto cards_per_player = (kDeckSize - kDogSize) / game->NumPlayers();
+      for (auto player = Player{0}; player < game->NumPlayers(); ++player)
+      {
+        player_hands_[player].insert(player_hands_[player].end(), it, it + cards_per_player);
+        it += cards_per_player;
+      }
+    }
+
+#pragma endregion
+#pragma region Legal Actions
+
+    std::vector<Action> FrenchTarotState::LegalActions() const
+    {
+      switch (phase_)
+      {
+      case Phase::Dealing:
+        return {0}; // Dummy action to deal cards
+      case Phase::Bidding:
+        return LegalActionsBid();
+      case Phase::DeclaringPoignee:
+        return LegalActionsDog();
+      case Phase::DeclaringSlam:
+        return LegalActionsSlam();
+      case Phase::Playing:
+        return LegalActionsPlay();
+      default:
+        break;
+      }
+      return {};
+    }
+
+    std::vector<Action> LegalActionsBid() { return {}; }
+    std::vector<Action> LegalActionsDog() { return {}; }
+    std::vector<Action> LegalActionsSlam() { return {}; }
+    std::vector<Action> LegalActionsHandful() { return {}; }
+    std::vector<Action> LegalActionsPlay() { return {}; }
+
+#pragma endregion
+#pragma region Apply Action
+
+    /**
+     * @brief Applies the given action to the current game state.
+     * @param move The action to apply to the state.
+     *
+     * @details The actions vary depending on the current game phase:
+     *
+     * **Phase-specific actions:**
+     * - Dealing phase: distribute cards to players and the dog
+     * - Bidding phase: players bid in turn
+     * - DeclaringSlam phase: the taker declares whether they intend to make a slam
+     * - DeclaringPoignee phase: players declare whether they have a poignee
+     * - Playing phase: players play cards in turn
+     *
+     * **Action value ranges:**
+     *
+     * Card actions (0-77):
+     * - 0-13: Hearts cards
+     * - 14-27: Diamonds cards
+     * - 28-41: Clubs cards
+     * - 42-55: Spades cards
+     * - 56-77: Trump cards
+     *
+     * Bidding actions (78-82):
+     * - 78: Bid Pass
+     * - 79: Bid Small
+     * - 80: Bid Guard
+     * - 81: Bid Guard Without
+     * - 82: Bid Guard Against
+     *
+     * Declaration actions (83-86):
+     * - 83: Declare No Poignee
+     * - 84: Declare Poignee
+     * - 85: Declare No Slam
+     * - 86: Declare Slam
+     */
+    void FrenchTarotState::DoApplyAction(Action move)
+    {
+      switch (phase_)
+      {
+      case Phase::Dealing:
+        DealCards();
+      case Phase::Bidding:
+        ApplyActionBid(move);
+      case Phase::DeclaringSlam:
+        ApplyActionSlam(move);
+      case Phase::DeclaringPoignee:
+        ApplyActionDog(move);
+      case Phase::Playing:
+        ApplyActionPlay(move);
+      default:
+        return SpielFatalError("Invalid phase in ApplyAction");
+      }
+      history_.push_back({CurrentPlayer(), move});
+    }
+
+    void ApplyActionBid(Action move) {}
+    void ApplyActionDog(Action move) {}
+    void ApplyActionSlam(Action move) {}
+    void ApplyActionHandful(Action move) {}
+    void ApplyActionPlay(Action move) {}
+
+#pragma endregion
+#pragma region Chance Outcomes
+
+    ActionsAndProbs FrenchTarotState::ChanceOutcomes() const {}
+
+    ActionsAndProbs ChanceBidActions() {}
+    ActionsAndProbs ChanceDogActions() {}
+    ActionsAndProbs ChanceSlamActions() {}
+    ActionsAndProbs ChanceHandfulActions() {}
+
+#pragma endregion
+#pragma region Observers and Information State
+
+    /** @brief Observer for French Tarot.
+     */
     class FrenchTarotObserver : public Observer
     {
     public:
@@ -75,6 +258,11 @@ namespace open_spiel
           : Observer(/*has_string=*/true, /*has_tensor=*/true),
             iig_obs_type_(iig_obs_type) {}
 
+      /** @brief Writes the tensor representation of the observed state.
+       *  @param observed_state The observed state.
+       *  @param player The player for whom the observation is made.
+       *  @param allocator The allocator to use for the tensor.
+       */
       void WriteTensor(const State &observed_state, int player,
                        Allocator *allocator) const override
       {
@@ -82,6 +270,11 @@ namespace open_spiel
             open_spiel::down_cast<const FrenchTarotState &>(observed_state);
       }
 
+      /** @brief Converts the observed state to a string representation.
+       *  @param observed_state The observed state.
+       *  @param player The player for whom the observation is made.
+       *  @return The string representation of the observed state.
+       */
       std::string StringFrom(const State &observed_state,
                              int player) const override
       {
@@ -94,59 +287,45 @@ namespace open_spiel
       IIGObservationType iig_obs_type_;
     };
 
-    FrenchTarotState::FrenchTarotState(std::shared_ptr<const Game> game)
-        : State(game)
+    std::string FrenchTarotState::InformationStateString(Player player) const
     {
-      phase_ = Phase::Dealing;
-      current_player_ = 0;
-      current_trick_ = {};
-      tricks_ = {};
-      deck_ = {};
-      for (int i = 0; i < kDeckSize; ++i)
-        deck_[i] = i;
-      std::shuffle(deck_.begin(), deck_.end(), game->GetRNGState());
-      slam_declare_ = Declare::NoSlam;
-      player_declares_ = std::vector<Declare>(game->NumPlayers(), Declare::NoSlam);
-      fool_player_ = kInvalidPlayer;
-      fool_trick_ = nullptr;
-      replacement_trick_ = nullptr;
-      replacement_card_ = -1;
-      slam_bonus_ = 0.0;
-      petit_au_bout_bonus_ = 0.0;
+      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
+      return game.info_state_observer_->StringFrom(*this, player);
     }
 
-    int FrenchTarotState::CurrentPlayer() const
+    std::string FrenchTarotState::ObservationString(Player player) const
     {
-      if (IsTerminal())
-        return kTerminalPlayerId;
-      if (phase_ != Phase::Playing)
-        return kChancePlayerId;
-      return current_player_;
+      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
+      return game.default_observer_->StringFrom(*this, player);
     }
 
-    void FrenchTarotState::DoApplyAction(Action move)
+    void FrenchTarotState::InformationStateTensor(Player player,
+                                                  absl::Span<float> values) const
     {
-      history_.push_back({CurrentPlayer(), move});
+      ContiguousAllocator allocator(values);
+      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
+      game.info_state_observer_->WriteTensor(*this, player, &allocator);
     }
 
-    std::vector<Action> FrenchTarotState::LegalActions() const
+    void FrenchTarotState::ObservationTensor(Player player,
+                                             absl::Span<float> values) const
     {
-      switch (phase_)
-      {
-      case Phase::Dealing:
-        return {};
-      case Phase::Bidding:
-        return {};
-      case Phase::DeclaringPoignee:
-        return {};
-      case Phase::DeclaringSlam:
-        return {};
-      case Phase::Playing:
-        return {};
-      default:
-        break;
-      }
-      return {};
+      ContiguousAllocator allocator(values);
+      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
+      game.default_observer_->WriteTensor(*this, player, &allocator);
+    }
+
+    std::unique_ptr<State> FrenchTarotState::ResampleFromInfostate(
+        int player_id, std::function<double()> rng) const
+    {
+      std::unique_ptr<State> state = game_->NewInitialState();
+
+      return state;
+    }
+
+    std::unique_ptr<State> FrenchTarotState::Clone() const
+    {
+      return std::unique_ptr<State>(new FrenchTarotState(*this));
     }
 
     std::string FrenchTarotState::ActionToString(Player player, Action action) const
@@ -203,7 +382,7 @@ namespace open_spiel
         case Declare::Slam:
           declare_str = "Slam";
           break;
-          case Declare::Poignee:
+        case Declare::Poignee:
           declare_str = "Poignee";
           break;
         case Declare::NoPoignee:
@@ -223,114 +402,14 @@ namespace open_spiel
       return str;
     }
 
-    bool FrenchTarotState::IsTerminal() const
-    {
-      return phase_ == Phase::Terminal;
-    }
-
-    std::vector<double> FrenchTarotState::Returns() const
-    {
-      if (!IsTerminal())
-        return std::vector<double>(num_players_, 0.0);
-
-      std::vector<double> returns(num_players_);
-
-      std::tuple<double, bool> score = PartialScore();
-      bool taker_won = std::get<1>(score);
-
-      double taker_score = taker_won ? GetGame()->MaxUtility() : GetGame()->MinUtility();
-
-      for (auto player = Player{0}; player < num_players_; ++player)
-      {
-        if (player == taker_)
-          returns[player] = taker_won ? kUtility : -kUtility;
-        else
-          returns[player] = taker_won ? -kUtility / (num_players_ - 1) : kUtility / (num_players_ - 1);
-      }
-      return returns;
-    }
-
-    std::tuple<double, bool> FrenchTarotState::PartialScore() const
-    {
-      return std::make_tuple(0.0, false);
-    }
-
-    std::string FrenchTarotState::InformationStateString(Player player) const
-    {
-      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
-      return game.info_state_observer_->StringFrom(*this, player);
-    }
-
-    std::string FrenchTarotState::ObservationString(Player player) const
-    {
-      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
-      return game.default_observer_->StringFrom(*this, player);
-    }
-
-    void FrenchTarotState::InformationStateTensor(Player player,
-                                                  absl::Span<float> values) const
-    {
-      ContiguousAllocator allocator(values);
-      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
-      game.info_state_observer_->WriteTensor(*this, player, &allocator);
-    }
-
-    void FrenchTarotState::ObservationTensor(Player player,
-                                             absl::Span<float> values) const
-    {
-      ContiguousAllocator allocator(values);
-      const FrenchTarotGame &game = open_spiel::down_cast<const FrenchTarotGame &>(*game_);
-      game.default_observer_->WriteTensor(*this, player, &allocator);
-    }
-
-    std::unique_ptr<State> FrenchTarotState::Clone() const
-    {
-      return std::unique_ptr<State>(new FrenchTarotState(*this));
-    }
-
-    std::vector<std::pair<Action, double>> FrenchTarotState::ChanceOutcomes() const
-    {
-      SPIEL_CHECK_TRUE(IsChanceNode());
-      std::vector<std::pair<Action, double>> outcomes;
-
-      return outcomes;
-    }
-
-    std::unique_ptr<State> FrenchTarotState::ResampleFromInfostate(
-        int player_id, std::function<double()> rng) const
-    {
-      std::unique_ptr<State> state = game_->NewInitialState();
-      Action player_chance = history_.at(player_id).action;
-      for (int p = 0; p < game_->NumPlayers(); ++p)
-      {
-        if (p == history_.size())
-          return state;
-        if (p == player_id)
-        {
-          state->ApplyAction(player_chance);
-        }
-        else
-        {
-          Action other_chance = player_chance;
-          while (other_chance == player_chance)
-          {
-            other_chance = SampleAction(state->ChanceOutcomes(), rng()).first;
-          }
-          state->ApplyAction(other_chance);
-        }
-      }
-      SPIEL_CHECK_GE(state->CurrentPlayer(), 0);
-      if (game_->NumPlayers() == history_.size())
-        return state;
-      for (int i = game_->NumPlayers(); i < history_.size(); ++i)
-      {
-        state->ApplyAction(history_.at(i).action);
-      }
-      return state;
-    }
+#pragma endregion
+#pragma region Game Methods
 
     FrenchTarotGame::FrenchTarotGame(const GameParameters &params)
-        : Game(kGameType, params), num_players_(ParameterValue<int>("players"))
+        : Game(kGameType, params),
+          num_players_(ParameterValue<int>("players")),
+          seed_(ParameterValue<int>("rng_seed", kDefaultSeed)),
+          rng_(new std::mt19937(seed_ >= 0 ? seed_ : kDefaultSeed))
     {
       SPIEL_CHECK_GE(num_players_, kGameType.min_num_players);
       SPIEL_CHECK_LE(num_players_, kGameType.max_num_players);
@@ -353,7 +432,7 @@ namespace open_spiel
 
     std::vector<int> FrenchTarotGame::InformationStateTensorShape() const
     {
-      int trick_index = num_players_ - 3;
+      int trick_index = num_players_ - kMinNumPlayers;
       int hand_size = kNumTricks[trick_index];
       int tricks = kNumTricks[trick_index];
       int bid_size = num_players_;
@@ -363,7 +442,7 @@ namespace open_spiel
 
     std::vector<int> FrenchTarotGame::ObservationTensorShape() const
     {
-      int trick_index = num_players_ - 3;
+      int trick_index = num_players_ - kMinNumPlayers;
       int hand_size = kNumTricks[trick_index];
       int tricks = kNumTricks[trick_index];
       return {hand_size, tricks};
@@ -382,7 +461,7 @@ namespace open_spiel
     std::string FrenchTarotGame::GetRNGState() const
     {
       std::ostringstream rng_stream;
-      rng_stream << rng_;
+      rng_stream << *rng_;
       return rng_stream.str();
     }
 
@@ -391,9 +470,96 @@ namespace open_spiel
       if (rng_state.empty())
         return;
       std::istringstream rng_stream(rng_state);
-      rng_stream >> rng_;
+      rng_stream >> *rng_;
     }
 
-    int FrenchTarotGame::RNG() const { return rng_(); }
+#pragma endregion
+#pragma region Trick
+
+    void Trick::Play(Player player, Card card)
+    {
+      if (cards_.size() == num_players_)
+        return;
+
+      cards_.push_back(std::make_pair(player, card));
+      auto suit = CardSuit(card / kCardsPerSuit);
+      auto rank = card % kCardsPerSuit;
+      if (suit == CardSuit::Trumps)
+        rank = card - kCardsPerSuit * (kNumSuits - 1);
+
+      if (suit == CardSuit::Trumps && rank == TrumpRank::Fool)
+        return;
+
+      if (leader_ == -1)
+      {
+        leader_ = player;
+        suit_ = suit;
+        winner_ = player;
+        highest_rank_ = rank;
+        return;
+      }
+
+      if (suit_ != CardSuit::Trumps && suit == CardSuit::Trumps)
+      {
+        suit_ = suit;
+        winner_ = player;
+        highest_rank_ = rank;
+      }
+      else if (suit == suit_ && rank > highest_rank_)
+      {
+        highest_rank_ = rank;
+        winner_ = player;
+      }
+    }
+
+    void Trick::ReplaceFool(Player player, Card card)
+    {
+      points_ -= CardPoints(kCardsPerSuit * (kNumSuits - 1) + TrumpRank::Fool);
+      for (auto &p : cards_)
+      {
+        if (p.first == player && p.second == 0)
+        {
+          p.second = card;
+          return;
+        }
+      }
+    }
+
+    std::vector<int> Trick::Tensor()
+    {
+      auto tensor = std::vector<int>(kTrickSize, -1);
+      auto i = 0;
+      for (const auto &p : cards_)
+        tensor[leader_ + i++] = p.second;
+      return tensor;
+    }
+
+    std::string Trick::ToString()
+    {
+      std::string result = "P-" + std::to_string(leader_) + "|";
+
+      for (const auto &[player, card] : cards_)
+      {
+        if (player == -1)
+          continue;
+
+        if (card >= 0 && card < kDeckSize)
+        {
+          const int suit = card / kCardsPerSuit;
+          const int rank = card % kCardsPerSuit;
+          result += kRankStr[rank];
+          result += kSuitsStr[suit];
+          result += "|";
+        }
+        else
+        {
+          result += "??|";
+        }
+      }
+      return result;
+    }
+
+#pragma endregion
+
   } // namespace french_tarot
 } // namespace open_spiel

@@ -34,7 +34,7 @@ namespace open_spiel
         testing::ChanceOutcomesTest(*LoadGame("french_tarot"));
         testing::RandomSimTest(*LoadGame("french_tarot"), 100);
         testing::RandomSimTestWithUndo(*LoadGame("french_tarot"), 1);
-        for (Player players = 3; players <= 4; players++)
+        for (Player players = kMinNumPlayers; players <= kMaxNumPlayers; players++)
         {
           testing::RandomSimTest(
               *LoadGame("french_tarot", {{"players", GameParameter(players)}}), 100);
@@ -45,31 +45,10 @@ namespace open_spiel
         testing::RandomSimTestCustomObserver(*LoadGame("french_tarot"), observer);
       }
 
-      void CountStates()
-      {
-        std::shared_ptr<const Game> game = LoadGame("french_tarot");
-        auto states = algorithms::GetAllStates(*game, /*depth_limit=*/-1,
-                                               /*include_terminals=*/true,
-                                               /*include_chance_states=*/false);
-        SPIEL_CHECK_EQ(states.size(), 7800);
-      }
-
-      void PolicyTest()
-      {
-        using PolicyGenerator = std::function<TabularPolicy(const Game &game)>;
-        std::vector<PolicyGenerator> policy_generators = {
-            GetAlwaysPassPolicy,
-            GetAlwaysBetPolicy,
-        };
-
-        std::shared_ptr<const Game> game = LoadGame("french_tarot");
-        for (const auto &policy_generator : policy_generators)
-        {
-          testing::TestEveryInfostateInPolicy(policy_generator, *game);
-          testing::TestPoliciesCanPlay(policy_generator, *game);
-        }
-      }
-
+      void BidTests();
+      void DealTests();
+      void TrickTakingTests();
+      void ScoringTests();
     } // namespace
   } // namespace french_tarot
 } // namespace open_spiel
@@ -77,13 +56,10 @@ namespace open_spiel
 int main(int argc, char **argv)
 {
   open_spiel::french_tarot::BasicFrenchTarotTests();
-  open_spiel::french_tarot::CountStates();
-  open_spiel::french_tarot::PolicyTest();
-  open_spiel::testing::CheckChanceOutcomes(*open_spiel::LoadGame(
-      "french_tarot", {{"players", open_spiel::GameParameter(3)}}));
-  open_spiel::testing::RandomSimTest(*open_spiel::LoadGame("french_tarot"),
-                                     /*num_sims=*/10);
+  open_spiel::testing::CheckChanceOutcomes(
+      *open_spiel::LoadGame("french_tarot", {{"players", open_spiel::GameParameter(3)}}));
+  open_spiel::testing::RandomSimTest(
+      *open_spiel::LoadGame("french_tarot"), /*num_sims=*/10);
   open_spiel::testing::ResampleInfostateTest(
-      *open_spiel::LoadGame("french_tarot"),
-      /*num_sims=*/10);
+      *open_spiel::LoadGame("french_tarot"), /*num_sims=*/10);
 }
