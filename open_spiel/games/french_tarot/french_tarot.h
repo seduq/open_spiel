@@ -28,6 +28,10 @@ namespace open_spiel
 {
   namespace french_tarot
   {
+    using Card = int;
+    class FrenchTarotGame;
+    class FrenchTarotObserver;
+
     inline constexpr const int kMaxNumPlayers = 4;
     inline constexpr const int kMinNumPlayers = 3;
     inline constexpr const int kDeckSize = 78;
@@ -64,13 +68,46 @@ namespace open_spiel
         56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
         70, 71, 72, 73, 74, 75, 76, 77};
 
+    const std::array<Card, kCardsOfTrump> kTrumps = []
+    {
+      std::array<Card, kCardsOfTrump> trumps{};
+      std::iota(trumps.begin(), trumps.end(), kFool);
+      return trumps;
+    }();
+
+    const std::array<Card, kNumSuits> kKings = []
+    {
+      std::array<Card, kNumSuits> kings{};
+      for (int suit = 0; suit < kNumSuits - 1; ++suit)
+        kings[suit] = suit * kCardsPerSuit + Rank::King;
+      return kings;
+    }();
+
+    const std::set<Card> kDiscardFilter = []
+    {
+      std::set<Card> to_remove;
+      to_remove.insert(kTrumps.begin(), kTrumps.end());
+      to_remove.insert(kKings.begin(), kKings.end());
+      return to_remove;
+    }();
+
     inline constexpr const std::array<const char *, kNumSuits> kSuitsStr = {"♥", "♦", "♣", "♠", "§"};
     inline constexpr const std::array<const char *, kCardsPerSuit> kRankStr = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "C", "Q", "K"};
     inline constexpr const std::array<const char *, kCardsOfTrump> kTrumpStr = {
         "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
         "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21"};
 
-    enum CardSuit : int
+    inline constexpr const std::array<int, 3> kHandfulThreshold = {
+        13,
+        10,
+    };
+    inline constexpr const std::array<std::array<int, 3>, 3> kHandfulBonus = {
+        std::array<int, 3>{10, 13, 20},
+        std::array<int, 3>{13, 15, 30},
+        std::array<int, 3>{15, 18, 40},
+    };
+
+    enum Suit : int
     {
       Invalid = -1,
       Hearts = 0,
@@ -80,16 +117,16 @@ namespace open_spiel
       Trumps = 4
     };
 
-    enum CardRank : int
+    enum Rank : int
     {
       Invalid = -1,
-      Jack = 11,
-      Knight = 12,
-      Queen = 13,
-      King = 14
+      Jack = 10,
+      Knight = 11,
+      Queen = 12,
+      King = 13,
     };
 
-    enum TrumpRank : int
+    enum Trump : int
     {
       Invalid = -1,
       Fool = 0,
@@ -97,8 +134,9 @@ namespace open_spiel
       World = 21
     };
 
-    enum BidType : int
+    enum Bid : int
     {
+      Invalid = -1,
       Pass = 78,
       Small = 79,
       Guard = 80,
@@ -109,6 +147,7 @@ namespace open_spiel
 
     enum Declare : int
     {
+      Invalid = -1,
       NoPoignee = 83,
       Poignee = 84,
       NoSlam = 85,
@@ -120,32 +159,28 @@ namespace open_spiel
     {
       Dealing,
       Bidding,
+      Discarding,
       DeclaringSlam,
       DeclaringPoignee,
       Playing,
       Terminal
     };
 
-    class FrenchTarotGame;
-    class FrenchTarotObserver;
-
-    using Card = int;
-
     double CardPoints(Card card)
     {
       if (card < 0 || card >= kDeckSize)
         return 0.0;
-      auto suit = CardSuit(card / kCardsPerSuit);
-      if (suit == CardSuit::Trumps)
+      auto suit = Suit(card / kCardsPerSuit);
+      if (suit == Suit::Trumps)
       {
         auto rank = card - kCardsPerSuit * (kNumSuits - 1);
-        if (rank == TrumpRank::Fool)
+        if (rank == Trump::Fool)
           return 4.5;
-        if (rank == TrumpRank::Fool)
+        if (rank == Trump::Fool)
           return 4.5;
-        else if (rank == TrumpRank::World)
+        else if (rank == Trump::World)
           return 4.5;
-        else if (rank == TrumpRank::Petit)
+        else if (rank == Trump::Petit)
           return 4.5;
         else
           return 0.5;
@@ -153,33 +188,97 @@ namespace open_spiel
       else
       {
         auto rank = card % kCardsPerSuit;
-        if (rank == CardRank::King)
+        if (rank == Rank::King)
           return 4.5;
-        else if (rank == CardRank::Queen)
+        else if (rank == Rank::Queen)
           return 3.5;
-        else if (rank == CardRank::Knight)
+        else if (rank == Rank::Knight)
           return 2.5;
-        else if (rank == CardRank::Jack)
+        else if (rank == Rank::Jack)
           return 1.5;
         else
           return 0.5;
       }
     };
 
+    Rank CardRank(Card card)
+    {
+      if (card < 0 || card >= kFool)
+        return Rank::Invalid;
+      auto suit = Suit(card / kCardsPerSuit);
+      if (suit != Suit::Trumps)
+      {
+        auto rank = card % kCardsPerSuit;
+        return static_cast<Rank>(rank);
+      }
+      else
+        return Rank::Invalid;
+    };
+
+    Trump CardTrumpRank(Card card)
+    {
+      if (card < 0 || card >= kDeckSize)
+        return Trump::Invalid;
+      auto suit = Suit(card / kCardsPerSuit);
+      if (suit == Suit::Trumps)
+      {
+        auto rank = card - kCardsPerSuit * (kNumSuits - 1);
+        if (rank >= 0 && rank <= 21)
+          return static_cast<Trump>(rank);
+        else
+          return Trump::Invalid;
+      }
+      else
+        return Trump::Invalid;
+    }
+
+    Suit CardSuit(Card card)
+    {
+      if (card < 0 || card >= kDeckSize)
+        return Suit::Invalid;
+      return Suit(card / kCardsPerSuit);
+    };
+
+    Trump CardTrump(Card card)
+    {
+      if (card < 0 || card >= kDeckSize)
+        return Trump::Invalid;
+      auto suit = Suit(card / kCardsPerSuit);
+      if (suit == Suit::Trumps)
+      {
+        auto rank = card - kCardsPerSuit * (kNumSuits - 1);
+        if (rank >= 0 && rank <= 21)
+          return static_cast<Trump>(rank);
+        else
+          return Trump::Invalid;
+      }
+      else
+      {
+        return Trump::Invalid;
+      }
+    };
+
+    Declare DeclareFromAction(Action action)
+    {
+      if (action >= Declare::NoPoignee && action < Declare::size + Declare::NoPoignee)
+        return static_cast<Declare>(action);
+      else
+        return Declare::Invalid;
+    };
+
     class Trick
     {
     public:
-      Trick(int num_players) : leader_(kInvalidPlayer), suit_(CardSuit::Invalid),
+      Trick(int num_players) : leader_(kInvalidPlayer), suit_(Suit::Invalid),
                                cards_({}), points_(0.0),
                                highest_rank_(-1), num_players_(num_players),
                                winner_(kInvalidPlayer) {}
       Trick(int num_players,
-            Player leader, Card card) : leader_(leader),
-                                        num_players_(num_players)
+            Player leader, Card card) : leader_(leader), num_players_(num_players)
       {
         cards_.push_back(std::make_pair(leader, card));
-        suit_ = CardSuit(card / kCardsPerSuit);
-        if (suit_ == CardSuit::Trumps)
+        suit_ = Suit(card / kCardsPerSuit);
+        if (suit_ == Suit::Trumps)
           highest_rank_ = card - kCardsPerSuit * (kNumSuits - 1);
         else
           highest_rank_ = card % kCardsPerSuit;
@@ -187,7 +286,8 @@ namespace open_spiel
       Player Leader() const { return leader_; }
       Player Winner() const { return winner_; };
       double Points() const { return points_; }
-      Card Suit() const { return suit_; }
+      Suit SuitLed() const { return suit_; }
+      int HighestRank() const { return highest_rank_; }
       const std::vector<std::pair<Player, Card>> &Cards() const { return cards_; }
       void Play(Player player, Card card);
       void ReplaceFool(Player player, Card card);
@@ -197,7 +297,7 @@ namespace open_spiel
     private:
       Player leader_;
       Player winner_;
-      CardSuit suit_;
+      Suit suit_;
       double points_;
       int highest_rank_;
       int num_players_;
@@ -230,9 +330,6 @@ namespace open_spiel
 
     protected:
       void DoApplyAction(Action move) override;
-
-    private:
-      void DealCards();
       std::pair<double, bool> PartialScore() const;
 
       std::vector<Action> LegalActionsBid() const;
@@ -241,36 +338,39 @@ namespace open_spiel
       std::vector<Action> LegalActionsHandful() const;
       std::vector<Action> LegalActionsPlay() const;
 
-      ActionsAndProbs ChanceBidActions() const;
-      ActionsAndProbs ChanceDogActions() const;
-      ActionsAndProbs ChanceSlamActions() const;
-      ActionsAndProbs ChanceHandfulActions() const;
+      ActionsAndProbs ChanceBidActions();
+      ActionsAndProbs ChanceDogActions();
+      ActionsAndProbs ChanceSlamActions();
+      ActionsAndProbs ChanceHandfulActions();
 
-      void ApplyActionBid(Action move);
-      void ApplyActionDog(Action move);
-      void ApplyActionSlam(Action move);
-      void ApplyActionHandful(Action move);
-      void ApplyActionPlay(Action move);
+      void ApplyActionBid(Bid bid) const;
+      void ApplyActionDog(Card card) const;
+      void ApplyActionSlam(Declare declare) const;
+      void ApplyActionHandful(Declare declare) const;
+      void ApplyActionPlay(Card card) const;
 
-      void SettleFool();
-      void FindReplacement();
-      double PetitBonus();
-      double SlamBonus();
+    private:
+      void DealCards();
 
-      void ShowHandful();
-      void ShowDog();
+      void SettleFool() const;
+      void FindReplacement() const;
+      double PetitBonus() const;
+      double SlamBonus() const;
+
+      void ShowHandful(Player player) const;
+      void ShowDog() const;
 
       friend class FrenchTarotObserver;
       Phase phase_;
       Player current_player_;
       Player taker_;
-      BidType bid_;
-      std::vector<BidType> player_bids_;
+      Bid bid_;
 
+      std::vector<Bid> player_bids_;
       std::vector<std::vector<Card>> player_hands_;
       std::vector<Player> know_cards_;
       std::vector<Action> player_bids_;
-      std::array<Card, kDogSize> dog_;
+      std::vector<Card> dog_;
       std::vector<Card> discard_;
 
       Trick current_trick_;
@@ -295,7 +395,7 @@ namespace open_spiel
       explicit FrenchTarotGame(const GameParameters &params);
       int NumDistinctActions() const override
       {
-        auto bid_size = static_cast<int>(BidType::size);
+        auto bid_size = static_cast<int>(Bid::size);
         auto declare_size = static_cast<int>(Declare::size);
         return (kDeckSize + bid_size + declare_size);
       }
@@ -326,7 +426,7 @@ namespace open_spiel
         return (bid_size + declare_size);
       }
 
-      std::mt19937* RNG() const { return rng_.get(); }
+      std::mt19937 *RNG() const { return rng_.get(); }
       std::string GetRNGState() const override;
       void SetRNGState(const std::string &rng_state) const override;
 
@@ -340,9 +440,9 @@ namespace open_spiel
       std::shared_ptr<FrenchTarotObserver> private_observer_;
 
     private:
+      mutable std::unique_ptr<std::mt19937> rng_;
       int num_players_;
       int seed_;
-      mutable std::unique_ptr<std::mt19937> rng_;
     };
 
   } // namespace french_tarot

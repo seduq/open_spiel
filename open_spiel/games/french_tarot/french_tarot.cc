@@ -68,19 +68,21 @@ namespace open_spiel
     } // namespace game register
 
 #pragma endregion
-#pragma region State Methods
 
-    /** @brief Constructor for French Tarot state.
-     *  @param game The game associated with this state.
-     */
+#pragma region State Constructor
+
     FrenchTarotState::FrenchTarotState(std::shared_ptr<const Game> game)
-        : State(game), current_trick_(game->NumPlayers()),
+        : State(game), current_trick_(game->NumPlayers()), dog_({}),
           phase_(Phase::Dealing), fool_player_(kInvalidPlayer),
           fool_trick_(nullptr), replacement_trick_(nullptr), tricks_({}),
           replacement_card_(-1), current_player_(0), taker_(kInvalidPlayer),
-          bid_(BidType::Pass), slam_bonus_(0.0), petit_au_bout_bonus_(0.0),
+          bid_(Bid::Invalid), slam_bonus_(0.0), petit_au_bout_bonus_(0.0),
           slam_declare_(Declare::NoSlam), know_cards_(kDeckSize, kInvalidPlayer),
           player_declares_(game->NumPlayers(), Declare::NoSlam) {}
+
+#pragma endregion
+
+#pragma region State Methods
 
     std::vector<double> FrenchTarotState::Returns() const
     {
@@ -90,7 +92,7 @@ namespace open_spiel
       std::vector<double> returns(num_players_);
 
       auto score = PartialScore();
-      auto taker_won = score.first > 0.0;
+      auto taker_won = score.second;
 
       auto taker_points = taker_won ? GetGame()->MaxUtility() : GetGame()->MinUtility();
       auto defenders_points = -taker_points / (num_players_ - 1);
@@ -103,20 +105,6 @@ namespace open_spiel
           returns[player] = defenders_points;
       }
       return returns;
-    }
-
-    /** @brief Computes the partial score for the taker.
-     *  @return A pair containing the score and a boolean indicating if the taker won.
-     *
-     *  @details This function calculates the score for the taker based on the cards
-     *  they have collected in tricks. It returns a pair where the first element is
-     *  the score (positive if the taker won, negative otherwise) and the second
-     *  element is a boolean indicating whether the taker won or not.
-     */
-    std::pair<double, bool> FrenchTarotState::PartialScore() const
-    {
-      // TODO: Implement the actual scoring logic based on the rules of French Tarot.
-      return std::make_pair(0.0, false);
     }
 
     int FrenchTarotState::CurrentPlayer() const
@@ -144,6 +132,7 @@ namespace open_spiel
     }
 
 #pragma endregion
+
 #pragma region Legal Actions
 
     std::vector<Action> FrenchTarotState::LegalActions() const
@@ -166,13 +155,110 @@ namespace open_spiel
       return {};
     }
 
-    std::vector<Action> LegalActionsBid() { return {}; }
-    std::vector<Action> LegalActionsDog() { return {}; }
-    std::vector<Action> LegalActionsSlam() { return {}; }
-    std::vector<Action> LegalActionsHandful() { return {}; }
-    std::vector<Action> LegalActionsPlay() { return {}; }
+    std::vector<Action> FrenchTarotState::LegalActionsBid() const
+    {
+      std::vector<Action> bids = {Bid::Pass};
+      switch (bid_)
+      {
+      case Bid::Invalid:
+      case Bid::Pass:
+        bids.push_back(Bid::Small);
+        bids.push_back(Bid::Guard);
+        bids.push_back(Bid::GuardWithout);
+        bids.push_back(Bid::GuardAgainst);
+        break;
+      case Bid::Small:
+        bids.push_back(Bid::Guard);
+        bids.push_back(Bid::GuardWithout);
+        bids.push_back(Bid::GuardAgainst);
+        break;
+      case Bid::Guard:
+        bids.push_back(Bid::GuardWithout);
+        bids.push_back(Bid::GuardAgainst);
+        break;
+      case Bid::GuardWithout:
+        bids.push_back(Bid::GuardAgainst);
+        break;
+      case Bid::GuardAgainst:
+      default:
+        break;
+      }
+      return bids;
+    }
+
+    std::vector<Action> FrenchTarotState::LegalActionsDog() const
+    {
+      auto hand = player_hands_[current_player_];
+      auto filter = std::remove_if(hand.begin(), hand.end(),
+                                   [](Card card)
+                                   { return kDiscardFilter.count(card) > 0; });
+
+      hand.erase(filter, hand.end());
+      std::vector<Action> legal_actions(hand.begin(), hand.end());
+      return legal_actions;
+    }
+
+    std::vector<Action> FrenchTarotState::LegalActionsSlam() const
+    {
+      if (taker_ != current_player_)
+        return {Declare::NoSlam};
+      return {Declare::NoSlam, Declare::Slam};
+    }
+
+    std::vector<Action> FrenchTarotState::LegalActionsHandful() const
+    {
+      auto handful_idx = num_players_ - kMinNumPlayers;
+      if (kHandfulThreshold[handful_idx] < 0)
+        return {Declare::NoPoignee};
+      return {Declare::NoPoignee, Declare::Poignee};
+    }
+
+    std::vector<Action> FrenchTarotState::LegalActionsPlay() const
+    {
+      auto hand = player_hands_[current_player_];
+      auto suit_led = current_trick_.SuitLed();
+      std::vector<Card> higher_trump_cards;
+      std::vector<Card> trump_cards;
+      auto highest_rank = current_trick_.HighestRank();
+      std::vector<Card> suit_cards;
+      std::vector<Card> discard_cards;
+      std::vector<Action> legal_actions;
+      for (auto card : hand)
+      {
+        if (suit_led == Suit::Trumps && CardTrumpRank(card) > highest_rank)
+          higher_trump_cards.push_back(card);
+        if (suit_led == CardSuit(card))
+          suit_cards.push_back(card);
+        if (suit_led != Suit::Trumps && CardSuit(card) == Suit::Trumps)
+          trump_cards.push_back(card);
+        discard_cards.push_back(card);
+      }
+      // If we are following trumps and have a higher card, we must play it
+      if (!higher_trump_cards.empty())
+        legal_actions.insert(legal_actions.end(), higher_trump_cards.begin(), higher_trump_cards.end());
+
+      // If we are following trumps and don't have a higher trump, we must play a trump
+      if (legal_actions.empty())
+        legal_actions.insert(legal_actions.end(), trump_cards.begin(), trump_cards.end());
+
+      // If we don't have trumps, we must follow suit
+      if (legal_actions.empty())
+        legal_actions.insert(legal_actions.end(), suit_cards.begin(), suit_cards.end());
+
+      // If we don't have a valid card to play, we must discard
+      if (legal_actions.empty())
+        legal_actions.insert(legal_actions.end(), discard_cards.begin(), discard_cards.end());
+
+      // The fool can be played at any time
+      if (std::find(legal_actions.begin(), legal_actions.end(), kFool) == legal_actions.end() &&
+          std::find(hand.begin(), hand.end(), kFool) != hand.end())
+        legal_actions.push_back(kFool);
+
+      return legal_actions;
+    }
 
 #pragma endregion
+
 #pragma region Apply Action
 
     /**
@@ -216,37 +302,99 @@ namespace open_spiel
       {
       case Phase::Dealing:
         DealCards();
+        break;
       case Phase::Bidding:
-        ApplyActionBid(move);
+        ApplyActionBid(static_cast<Bid>(move));
+        break;
       case Phase::DeclaringSlam:
-        ApplyActionSlam(move);
+        ApplyActionSlam(static_cast<Declare>(move));
+        break;
       case Phase::DeclaringPoignee:
-        ApplyActionDog(move);
+        ApplyActionDog(static_cast<Card>(move));
+        break;
       case Phase::Playing:
-        ApplyActionPlay(move);
+        ApplyActionPlay(static_cast<Card>(move));
+        break;
       default:
         return SpielFatalError("Invalid phase in ApplyAction");
       }
       history_.push_back({CurrentPlayer(), move});
     }
 
-    void ApplyActionBid(Action move) {}
-    void ApplyActionDog(Action move) {}
-    void ApplyActionSlam(Action move) {}
-    void ApplyActionHandful(Action move) {}
-    void ApplyActionPlay(Action move) {}
+    void FrenchTarotState::ApplyActionBid(Bid bid) const
+    {
+      if (bid < Bid::Pass || bid > Bid::GuardAgainst)
+        return SpielFatalError("Invalid bid action");
+      if (bid != Bid::Pass)
+      {
+      }
+    }
+
+    void FrenchTarotState::ApplyActionDog(Card card) const {}
+
+    void FrenchTarotState::ApplyActionSlam(Declare declare) const {}
+
+    void FrenchTarotState::ApplyActionHandful(Declare declare) const {}
+
+    void FrenchTarotState::ApplyActionPlay(Card card) const {}
 
 #pragma endregion
+
 #pragma region Chance Outcomes
 
     ActionsAndProbs FrenchTarotState::ChanceOutcomes() const {}
 
-    ActionsAndProbs ChanceBidActions() {}
-    ActionsAndProbs ChanceDogActions() {}
-    ActionsAndProbs ChanceSlamActions() {}
-    ActionsAndProbs ChanceHandfulActions() {}
+    ActionsAndProbs FrenchTarotState::ChanceBidActions() {}
+
+    ActionsAndProbs FrenchTarotState::ChanceDogActions() {}
+
+    ActionsAndProbs FrenchTarotState::ChanceSlamActions() {}
+
+    ActionsAndProbs FrenchTarotState::ChanceHandfulActions() {}
 
 #pragma endregion
+
+#pragma region Scoring
+
+    /** @brief Computes the partial score for the taker.
+     *  @return A pair containing the score and a boolean indicating if the taker won.
+     *
+     *  @details This function calculates the score for the taker based on the cards
+     *  they have collected in tricks. It returns a pair where the first element is
+     *  the score (positive if the taker won, negative otherwise) and the second
+     *  element is a boolean indicating whether the taker won or not.
+     */
+    std::pair<double, bool> FrenchTarotState::PartialScore() const
+    {
+      // TODO: Implement the actual scoring logic based on the rules of French Tarot.
+      return std::make_pair(0.0, false);
+    }
+
+    void FrenchTarotState::SettleFool() const {
+
+    };
+
+    void FrenchTarotState::FindReplacement() const {
+
+    };
+
+    double FrenchTarotState::PetitBonus() const {
+
+    };
+
+    double FrenchTarotState::SlamBonus() const {
+
+    };
+
+#pragma endregion
+
+#pragma region Show Cards
+
+    void FrenchTarotState::ShowDog() const {}
+    void FrenchTarotState::ShowHandful(Player player) const {}
+
+#pragma endregion
+
 #pragma region Observers and Information State
 
     /** @brief Observer for French Tarot.
@@ -341,28 +489,28 @@ namespace open_spiel
         else
         {
           absl::StrAppend(&card_str, kTrumpStr[action - kCardsPerSuit * 4]);
-          absl::StrAppend(&card_str, kSuitsStr[CardSuit::Trumps]);
+          absl::StrAppend(&card_str, kSuitsStr[Suit::Trumps]);
         }
         return absl::StrCat("[", player, ", ", card_str, "]");
       }
-      else if (action < BidType::GuardAgainst)
+      else if (action < Bid::GuardAgainst)
       {
         std::string bid_str = "";
-        switch (BidType(action))
+        switch (Bid(action))
         {
-        case BidType::Pass:
+        case Bid::Pass:
           bid_str = "Pass";
           break;
-        case BidType::Small:
+        case Bid::Small:
           bid_str = "Small";
           break;
-        case BidType::Guard:
+        case Bid::Guard:
           bid_str = "Guard";
           break;
-        case BidType::GuardWithout:
+        case Bid::GuardWithout:
           bid_str = "Guard Without";
           break;
-        case BidType::GuardAgainst:
+        case Bid::GuardAgainst:
           bid_str = "Guard Against";
           break;
         default:
@@ -403,6 +551,7 @@ namespace open_spiel
     }
 
 #pragma endregion
+
 #pragma region Game Methods
 
     FrenchTarotGame::FrenchTarotGame(const GameParameters &params)
@@ -432,20 +581,25 @@ namespace open_spiel
 
     std::vector<int> FrenchTarotGame::InformationStateTensorShape() const
     {
-      int trick_index = num_players_ - kMinNumPlayers;
-      int hand_size = kNumTricks[trick_index];
-      int tricks = kNumTricks[trick_index];
+      int num_players_idx = num_players_ - kMinNumPlayers;
+      int hand_size = kNumTricks[num_players_idx];
+      int trick_size = kNumTricks[num_players_idx];
       int bid_size = num_players_;
-      int declare_size = num_players_ + 1; // Handful + Slam Declare
-      return {hand_size, bid_size, declare_size, tricks};
+      int declare_size = num_players_ + 1;
+      int dog_observe_size = kDogSize;
+      int dog_discard_size = kDogSize;
+      return {hand_size, bid_size,
+              dog_observe_size, dog_discard_size,
+              declare_size, trick_size * kTrickSize};
     }
 
     std::vector<int> FrenchTarotGame::ObservationTensorShape() const
     {
-      int trick_index = num_players_ - kMinNumPlayers;
-      int hand_size = kNumTricks[trick_index];
-      int tricks = kNumTricks[trick_index];
-      return {hand_size, tricks};
+      int num_players_idx = num_players_ - kMinNumPlayers;
+      int hand_size = kNumTricks[num_players_idx];
+      int trick_size = kNumTricks[num_players_idx];
+      int dog_observe_size = kDogSize;
+      return {hand_size, dog_observe_size, trick_size * kTrickSize};
     }
 
     std::shared_ptr<Observer> FrenchTarotGame::MakeObserver(
@@ -474,6 +628,7 @@ namespace open_spiel
     }
 
 #pragma endregion
+
 #pragma region Trick
 
     void Trick::Play(Player player, Card card)
@@ -482,12 +637,12 @@ namespace open_spiel
         return;
 
       cards_.push_back(std::make_pair(player, card));
-      auto suit = CardSuit(card / kCardsPerSuit);
+      auto suit = Suit(card / kCardsPerSuit);
       auto rank = card % kCardsPerSuit;
-      if (suit == CardSuit::Trumps)
+      if (suit == Suit::Trumps)
         rank = card - kCardsPerSuit * (kNumSuits - 1);
 
-      if (suit == CardSuit::Trumps && rank == TrumpRank::Fool)
+      if (suit == Suit::Trumps && rank == Trump::Fool)
         return;
 
       if (leader_ == -1)
@@ -499,7 +654,7 @@ namespace open_spiel
         return;
       }
 
-      if (suit_ != CardSuit::Trumps && suit == CardSuit::Trumps)
+      if (suit_ != Suit::Trumps && suit == Suit::Trumps)
       {
         suit_ = suit;
         winner_ = player;
@@ -514,7 +669,7 @@ namespace open_spiel
 
     void Trick::ReplaceFool(Player player, Card card)
     {
-      points_ -= CardPoints(kCardsPerSuit * (kNumSuits - 1) + TrumpRank::Fool);
+      points_ -= CardPoints(kCardsPerSuit * (kNumSuits - 1) + Trump::Fool);
       for (auto &p : cards_)
       {
         if (p.first == player && p.second == 0)
