@@ -74,7 +74,8 @@ namespace open_spiel
     FrenchTarotState::FrenchTarotState(std::shared_ptr<const Game> game)
         : State(game), current_trick_(game->NumPlayers()), dog_({}),
           phase_(Phase::Dealing), fool_player_(kInvalidPlayer),
-          fool_trick_(nullptr), replacement_trick_(nullptr), tricks_({}),
+          deck_(deck_.begin(), deck_.end()), player_hands_(game->NumPlayers() + 1),
+          fool_trick_(nullptr), replacement_trick_(nullptr), tricks_(),
           replacement_card_(-1), current_player_(0), taker_(kInvalidPlayer),
           bid_(Bid::Invalid), slam_bonus_(0.0), petit_au_bout_bonus_(0.0),
           slam_declare_(Declare::NoSlam), know_cards_(kDeckSize, kInvalidPlayer),
@@ -216,45 +217,16 @@ namespace open_spiel
     std::vector<Action> FrenchTarotState::LegalActionsPlay() const
     {
       auto hand = player_hands_[current_player_];
-      auto suit_led = current_trick_.SuitLed();
-      std::vector<Card> higher_trump_cards;
-      std::vector<Card> trump_cards;
-      auto highest_rank = current_trick_.HighestRank();
-      std::vector<Card> suit_cards;
-      std::vector<Card> discard_cards;
+      std::vector<Action> discard_cards;
       std::vector<Action> legal_actions;
       for (auto card : hand)
       {
-        if (suit_led == Suit::Trumps && CardTrumpRank(card) > highest_rank)
-          higher_trump_cards.push_back(card);
-        if (suit_led == CardSuit(card))
-          suit_cards.push_back(card);
-        if (suit_led != Suit::Trumps && CardSuit(card) == Suit::Trumps)
-          trump_cards.push_back(card);
-        discard_cards.push_back(card);
+        if (current_trick_.Legal(card))
+          legal_actions.push_back(card.Id());
+        discard_cards.push_back(card.Id());
       }
-      // If we are following trumps and have a higher card, we must play it
-      if (!higher_trump_cards.empty())
-        legal_actions.insert(legal_actions.end(), higher_trump_cards.begin(), higher_trump_cards.end());
 
-      // If we are following trumps and don't have a higher trump, we must play a trump
-      if (legal_actions.empty())
-        legal_actions.insert(legal_actions.end(), trump_cards.begin(), trump_cards.end());
-
-      // If we don't have trumps, we must follow suit
-      if (legal_actions.empty())
-        legal_actions.insert(legal_actions.end(), suit_cards.begin(), suit_cards.end());
-
-      // If we don't have a valid card to play, we must discard
-      if (legal_actions.empty())
-        legal_actions.insert(legal_actions.end(), discard_cards.begin(), discard_cards.end());
-
-      // The fool can be played at any time
-      if (std::find(legal_actions.begin(), legal_actions.end(), kFool) == legal_actions.end() &&
-          std::find(hand.begin(), hand.end(), kFool) != hand.end())
-        legal_actions.push_back(kFool);
-
-      return legal_actions;
+      return legal_actions.size() > 0 ? legal_actions : discard_cards;
     }
 
 #pragma endregion
@@ -489,7 +461,7 @@ namespace open_spiel
         else
         {
           absl::StrAppend(&card_str, kTrumpStr[action - kCardsPerSuit * 4]);
-          absl::StrAppend(&card_str, kSuitsStr[Suit::Trumps]);
+          absl::StrAppend(&card_str, kSuitsStr[CardSuit::Trumps]);
         }
         return absl::StrCat("[", player, ", ", card_str, "]");
       }
@@ -586,11 +558,11 @@ namespace open_spiel
       int trick_size = kNumTricks[num_players_idx];
       int bid_size = num_players_;
       int declare_size = num_players_ + 1;
-      int dog_observe_size = kDogSize;
+      int dog_reveled_size = kDogSize;
       int dog_discard_size = kDogSize;
-      return {hand_size, bid_size,
-              dog_observe_size, dog_discard_size,
-              declare_size, trick_size * kTrickSize};
+      return {hand_size + bid_size,
+              dog_reveled_size + dog_discard_size,
+              declare_size + trick_size * (2 * num_players_ - 1)};
     }
 
     std::vector<int> FrenchTarotGame::ObservationTensorShape() const
@@ -598,8 +570,8 @@ namespace open_spiel
       int num_players_idx = num_players_ - kMinNumPlayers;
       int hand_size = kNumTricks[num_players_idx];
       int trick_size = kNumTricks[num_players_idx];
-      int dog_observe_size = kDogSize;
-      return {hand_size, dog_observe_size, trick_size * kTrickSize};
+      int dog_reveled_size = kDogSize;
+      return {hand_size + dog_reveled_size + trick_size * (2 * num_players_ - 1)};
     }
 
     std::shared_ptr<Observer> FrenchTarotGame::MakeObserver(
@@ -631,45 +603,55 @@ namespace open_spiel
 
 #pragma region Trick
 
-    void Trick::Play(Player player, Card card)
+    void Trick::Add(Player player, Card card)
     {
       if (cards_.size() == num_players_)
         return;
 
       cards_.push_back(std::make_pair(player, card));
-      auto suit = Suit(card / kCardsPerSuit);
-      auto rank = card % kCardsPerSuit;
-      if (suit == Suit::Trumps)
-        rank = card - kCardsPerSuit * (kNumSuits - 1);
 
-      if (suit == Suit::Trumps && rank == Trump::Fool)
+      if (card.Suit() == CardSuit::Trumps &&
+          card.Rank() == CardRank::Fool)
         return;
 
-      if (leader_ == -1)
+      if (leader_ == kInvalidPlayer)
       {
         leader_ = player;
-        suit_ = suit;
         winner_ = player;
-        highest_rank_ = rank;
-        return;
+        suit_ = card.Suit();
       }
 
-      if (suit_ != Suit::Trumps && suit == Suit::Trumps)
+      if (cards_[winner_].second < card)
       {
-        suit_ = suit;
         winner_ = player;
-        highest_rank_ = rank;
+        suit_ = card.Suit();
       }
-      else if (suit == suit_ && rank > highest_rank_)
-      {
-        highest_rank_ = rank;
-        winner_ = player;
-      }
+    }
+
+    bool Trick::Legal(Card other) const
+    {
+      if (cards_.empty())
+        return true;
+
+      auto suit_led = SuitLed();
+      auto other_suit = other.Suit();
+
+      if (other == kFoolCard)
+        return true;
+
+      if (suit_led == CardSuit::Trumps)
+        return other_suit == CardSuit::Trumps;
+      else if (other_suit == CardSuit::Trumps)
+        return true;
+
+      if (other_suit == suit_led)
+        return true;
+
+      return false;
     }
 
     void Trick::ReplaceFool(Player player, Card card)
     {
-      points_ -= CardPoints(kCardsPerSuit * (kNumSuits - 1) + Trump::Fool);
       for (auto &p : cards_)
       {
         if (p.first == player && p.second == 0)
@@ -682,10 +664,10 @@ namespace open_spiel
 
     std::vector<int> Trick::Tensor()
     {
-      auto tensor = std::vector<int>(kTrickSize, -1);
+      auto tensor = std::vector<int>(2 * num_players_ - 1, -1);
       auto i = 0;
       for (const auto &p : cards_)
-        tensor[leader_ + i++] = p.second;
+        tensor[leader_ + i++] = p.second.Id();
       return tensor;
     }
 
@@ -700,10 +682,9 @@ namespace open_spiel
 
         if (card >= 0 && card < kDeckSize)
         {
-          const int suit = card / kCardsPerSuit;
-          const int rank = card % kCardsPerSuit;
+          auto rank = card.Suit() == CardSuit::Trumps ? card.Rank() - 56 : card.Rank();
           result += kRankStr[rank];
-          result += kSuitsStr[suit];
+          result += kSuitsStr[card.Suit()];
           result += "|";
         }
         else

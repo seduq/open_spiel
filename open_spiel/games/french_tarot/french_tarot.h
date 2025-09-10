@@ -28,16 +28,19 @@ namespace open_spiel
 {
   namespace french_tarot
   {
-    using Card = int;
+
+#pragma region Definitions
+
     class FrenchTarotGame;
     class FrenchTarotObserver;
+    class Card;
 
     inline constexpr const int kMaxNumPlayers = 4;
     inline constexpr const int kMinNumPlayers = 3;
+    inline constexpr const int kDefaultSeed = 42;
     inline constexpr const int kDeckSize = 78;
     inline constexpr const int kDogSize = 6;
     inline constexpr const int kDogId = 4;
-    inline constexpr const int kTrickSize = 7;
     inline constexpr const double kUtility = 6.0;
     inline constexpr const int kNumBids = 5;
     inline constexpr const int kNumDeclares = 4;
@@ -45,7 +48,7 @@ namespace open_spiel
     inline constexpr const int kCardsOfTrump = 22;
     inline constexpr const int kNumSuits = 5;
     inline constexpr const int kFool = 56;
-    inline constexpr const int kDefaultSeed = 42;
+    const Card kFoolCard = Card(kFool);
 
     inline constexpr const std::array<int, 2> kNumTricks = {
         24, // 3 players
@@ -70,16 +73,17 @@ namespace open_spiel
 
     const std::array<Card, kCardsOfTrump> kTrumps = []
     {
-      std::array<Card, kCardsOfTrump> trumps{};
-      std::iota(trumps.begin(), trumps.end(), kFool);
+      std::array<Card, kCardsOfTrump> trumps;
+      for (int i = 0; i < kCardsOfTrump; ++i)
+        trumps[i] = Card(kFool + i);
       return trumps;
     }();
 
     const std::array<Card, kNumSuits> kKings = []
     {
-      std::array<Card, kNumSuits> kings{};
+      std::array<Card, kNumSuits> kings;
       for (int suit = 0; suit < kNumSuits - 1; ++suit)
-        kings[suit] = suit * kCardsPerSuit + Rank::King;
+        kings[suit] = Card(suit * kCardsPerSuit + CardRank::King);
       return kings;
     }();
 
@@ -107,7 +111,11 @@ namespace open_spiel
         std::array<int, 3>{15, 18, 40},
     };
 
-    enum Suit : int
+#pragma endregion
+
+#pragma region Enums
+
+    enum CardSuit : int
     {
       Invalid = -1,
       Hearts = 0,
@@ -117,21 +125,18 @@ namespace open_spiel
       Trumps = 4
     };
 
-    enum Rank : int
+    enum CardRank : int
     {
       Invalid = -1,
+
       Jack = 10,
       Knight = 11,
       Queen = 12,
       King = 13,
-    };
 
-    enum Trump : int
-    {
-      Invalid = -1,
       Fool = 0,
       Petit = 1,
-      World = 21
+      World = 21,
     };
 
     enum Bid : int
@@ -142,7 +147,7 @@ namespace open_spiel
       Guard = 80,
       GuardWithout = 81,
       GuardAgainst = 82,
-      size = 5
+      Size = 5
     };
 
     enum Declare : int
@@ -152,7 +157,7 @@ namespace open_spiel
       Poignee = 84,
       NoSlam = 85,
       Slam = 86,
-      size = 4
+      Size = 4
     };
 
     enum Phase
@@ -166,143 +171,147 @@ namespace open_spiel
       Terminal
     };
 
-    double CardPoints(Card card)
+#pragma endregion
+
+#pragma region Card
+
+    class Card
     {
-      if (card < 0 || card >= kDeckSize)
-        return 0.0;
-      auto suit = Suit(card / kCardsPerSuit);
-      if (suit == Suit::Trumps)
+    public:
+      Card(int id)
+          : id_(id),
+            suit_(static_cast<CardSuit>(id / kCardsPerSuit)),
+            rank_(id < kFool ? id % kCardsPerSuit : id - kFool),
+            value_(CardPoints(id))
       {
-        auto rank = card - kCardsPerSuit * (kNumSuits - 1);
-        if (rank == Trump::Fool)
+        if (id < 0 || id >= kDeckSize)
+          SpielFatalError("Invalid card id");
+      }
+      int Id() const { return id_; }
+      CardSuit Suit() const { return suit_; }
+      int Rank() const { return rank_; }
+      float Value() const { return value_; }
+
+      Card &operator=(const Card &other)
+      {
+        if (this != &other)
+        {
+          id_ = other.id_;
+          suit_ = other.suit_;
+          rank_ = other.rank_;
+          value_ = other.value_;
+        }
+        return *this;
+      }
+      bool operator==(const Card &other) const { return id_ == other.id_; }
+      bool operator!=(const Card &other) const { return id_ != other.id_; }
+      bool operator<(const Card &other) const
+      {
+        if (other.suit_ == CardSuit::Trumps && this->suit_ != CardSuit::Trumps)
+          return true;
+        if (other.suit_ != CardSuit::Trumps && this->suit_ == CardSuit::Trumps)
+          return false;
+        if (suit_ != other.suit_)
+          return false;
+        return rank_ < other.rank_;
+      }
+      bool operator>(const Card &other) const
+      {
+        if (other.suit_ == CardSuit::Trumps && this->suit_ != CardSuit::Trumps)
+          return false;
+        if (other.suit_ != CardSuit::Trumps && this->suit_ == CardSuit::Trumps)
+          return true;
+        if (suit_ != other.suit_)
+          return false;
+        return rank_ > other.rank_;
+      }
+      bool operator<=(const Card &other) const { return !(*this > other); }
+      bool operator>=(const Card &other) const { return !(*this < other); }
+
+    private:
+      Card();
+      int id_;
+      int rank_;
+      float value_;
+      CardSuit suit_;
+      double CardPoints(Card card)
+      {
+        if (card.id_ < 0 || card.id_ >= kDeckSize)
+          return 0.0;
+        auto rank = card.rank_;
+        if (card.suit_ == CardSuit::Trumps &&
+            (card.rank_ == CardRank::Fool ||
+             card.rank_ == CardRank::Petit ||
+             card.rank_ == CardRank::World))
           return 4.5;
-        if (rank == Trump::Fool)
-          return 4.5;
-        else if (rank == Trump::World)
-          return 4.5;
-        else if (rank == Trump::Petit)
-          return 4.5;
+        else if (card.suit_ != CardSuit::Trumps)
+        {
+          if (rank == CardRank::King)
+            return 4.5;
+          else if (rank == CardRank::Queen)
+            return 3.5;
+          else if (rank == CardRank::Knight)
+            return 2.5;
+          else if (rank == CardRank::Jack)
+            return 1.5;
+        }
         else
           return 0.5;
       }
-      else
-      {
-        auto rank = card % kCardsPerSuit;
-        if (rank == Rank::King)
-          return 4.5;
-        else if (rank == Rank::Queen)
-          return 3.5;
-        else if (rank == Rank::Knight)
-          return 2.5;
-        else if (rank == Rank::Jack)
-          return 1.5;
-        else
-          return 0.5;
-      }
     };
 
-    Rank CardRank(Card card)
-    {
-      if (card < 0 || card >= kFool)
-        return Rank::Invalid;
-      auto suit = Suit(card / kCardsPerSuit);
-      if (suit != Suit::Trumps)
-      {
-        auto rank = card % kCardsPerSuit;
-        return static_cast<Rank>(rank);
-      }
-      else
-        return Rank::Invalid;
-    };
+#pragma endregion
 
-    Trump CardTrumpRank(Card card)
-    {
-      if (card < 0 || card >= kDeckSize)
-        return Trump::Invalid;
-      auto suit = Suit(card / kCardsPerSuit);
-      if (suit == Suit::Trumps)
-      {
-        auto rank = card - kCardsPerSuit * (kNumSuits - 1);
-        if (rank >= 0 && rank <= 21)
-          return static_cast<Trump>(rank);
-        else
-          return Trump::Invalid;
-      }
-      else
-        return Trump::Invalid;
-    }
-
-    Suit CardSuit(Card card)
-    {
-      if (card < 0 || card >= kDeckSize)
-        return Suit::Invalid;
-      return Suit(card / kCardsPerSuit);
-    };
-
-    Trump CardTrump(Card card)
-    {
-      if (card < 0 || card >= kDeckSize)
-        return Trump::Invalid;
-      auto suit = Suit(card / kCardsPerSuit);
-      if (suit == Suit::Trumps)
-      {
-        auto rank = card - kCardsPerSuit * (kNumSuits - 1);
-        if (rank >= 0 && rank <= 21)
-          return static_cast<Trump>(rank);
-        else
-          return Trump::Invalid;
-      }
-      else
-      {
-        return Trump::Invalid;
-      }
-    };
-
-    Declare DeclareFromAction(Action action)
-    {
-      if (action >= Declare::NoPoignee && action < Declare::size + Declare::NoPoignee)
-        return static_cast<Declare>(action);
-      else
-        return Declare::Invalid;
-    };
+#pragma region Trick
 
     class Trick
     {
     public:
-      Trick(int num_players) : leader_(kInvalidPlayer), suit_(Suit::Invalid),
-                               cards_({}), points_(0.0),
-                               highest_rank_(-1), num_players_(num_players),
-                               winner_(kInvalidPlayer) {}
+      Trick(int num_players) : leader_(kInvalidPlayer), suit_(CardSuit::Invalid),
+                               cards_({}), num_players_(num_players),
+                               winner_(kInvalidPlayer), fool_(false) {}
       Trick(int num_players,
-            Player leader, Card card) : leader_(leader), num_players_(num_players)
-      {
-        cards_.push_back(std::make_pair(leader, card));
-        suit_ = Suit(card / kCardsPerSuit);
-        if (suit_ == Suit::Trumps)
-          highest_rank_ = card - kCardsPerSuit * (kNumSuits - 1);
-        else
-          highest_rank_ = card % kCardsPerSuit;
-      }
+            Player leader,
+            Card card) : leader_(leader), fool_(false),
+                         num_players_(num_players), winner_(leader),
+                         suit_(static_cast<CardSuit>(card.Suit())),
+                         cards_({std::make_pair(leader, card)}) {}
       Player Leader() const { return leader_; }
       Player Winner() const { return winner_; };
-      double Points() const { return points_; }
-      Suit SuitLed() const { return suit_; }
-      int HighestRank() const { return highest_rank_; }
-      const std::vector<std::pair<Player, Card>> &Cards() const { return cards_; }
-      void Play(Player player, Card card);
+      double Points() const
+      {
+        auto points = std::reduce(
+            cards_.begin(), cards_.end(), 0.0,
+            [](double sum, const auto &pair)
+            { return sum + pair.second.Value(); });
+        if (fool_)
+          points -= kFoolCard.Value();
+        return points;
+      }
+      CardSuit SuitLed() const { return suit_; }
+      const std::vector<std::pair<Player, Card>> &Cards() const
+      {
+        return cards_;
+      }
+      void Add(Player player, Card card);
+      bool Legal(Card other) const;
       void ReplaceFool(Player player, Card card);
-      std::vector<Card> Tensor();
+      std::vector<int> Tensor();
       std::string ToString();
 
     private:
+      Trick();
+      bool fool_;
       Player leader_;
       Player winner_;
-      Suit suit_;
-      double points_;
-      int highest_rank_;
+      CardSuit suit_;
       int num_players_;
       std::vector<std::pair<Player, Card>> cards_;
     };
+
+#pragma endregion
+
+#pragma region State
 
     class FrenchTarotState : public State
     {
@@ -350,6 +359,8 @@ namespace open_spiel
       void ApplyActionPlay(Card card) const;
 
     private:
+      friend class FrenchTarotObserver;
+
       void DealCards();
 
       void SettleFool() const;
@@ -360,7 +371,22 @@ namespace open_spiel
       void ShowHandful(Player player) const;
       void ShowDog() const;
 
-      friend class FrenchTarotObserver;
+      Declare DeclareFromAction(Action action) const
+      {
+        if (action >= Declare::NoPoignee && action < Declare::NoPoignee + Declare::Size)
+          return static_cast<Declare>(action);
+        else
+          return Declare::Invalid;
+      };
+
+      Bid BidFromAction(Action action) const
+      {
+        if (action >= Bid::Pass && action < Bid::Pass + Bid::Size)
+          return static_cast<Bid>(action);
+        else
+          return Bid::Invalid;
+      };
+
       Phase phase_;
       Player current_player_;
       Player taker_;
@@ -375,7 +401,7 @@ namespace open_spiel
 
       Trick current_trick_;
       std::vector<Trick> tricks_;
-      std::array<Card, kDeckSize> deck_;
+      std::vector<Card> deck_;
 
       Declare slam_declare_;
       std::vector<Declare> player_declares_;
@@ -389,14 +415,18 @@ namespace open_spiel
       double petit_au_bout_bonus_;
     };
 
+#pragma endregion
+
+#pragma region Game
+
     class FrenchTarotGame : public Game
     {
     public:
       explicit FrenchTarotGame(const GameParameters &params);
       int NumDistinctActions() const override
       {
-        auto bid_size = static_cast<int>(Bid::size);
-        auto declare_size = static_cast<int>(Declare::size);
+        auto bid_size = static_cast<int>(Bid::Size);
+        auto declare_size = static_cast<int>(Declare::Size);
         return (kDeckSize + bid_size + declare_size);
       }
       std::unique_ptr<State> NewInitialState() const override;
@@ -444,6 +474,8 @@ namespace open_spiel
       int num_players_;
       int seed_;
     };
+
+#pragma endregion
 
   } // namespace french_tarot
 } // namespace open_spiel
