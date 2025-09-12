@@ -79,7 +79,7 @@ namespace open_spiel
           replacement_card_(-1), current_player_(0), taker_(kInvalidPlayer),
           bid_(Bid::Invalid), slam_bonus_(0.0), petit_au_bout_bonus_(0.0),
           slam_declare_(Declare::NoSlam), know_cards_(kDeckSize, kInvalidPlayer),
-          player_declares_(game->NumPlayers(), Declare::NoSlam) {}
+          handful_declares_(game->NumPlayers(), Declare::NoSlam) {}
 
 #pragma endregion
 
@@ -145,7 +145,7 @@ namespace open_spiel
       case Phase::Bidding:
         return LegalActionsBid();
       case Phase::DeclaringPoignee:
-        return LegalActionsDog();
+        return LegalActionsDiscard();
       case Phase::DeclaringSlam:
         return LegalActionsSlam();
       case Phase::Playing:
@@ -187,7 +187,7 @@ namespace open_spiel
       return bids;
     }
 
-    std::vector<Action> FrenchTarotState::LegalActionsDog() const
+    std::vector<Action> FrenchTarotState::LegalActionsDiscard() const
     {
       auto hand = player_hands_[current_player_];
       auto filter = std::remove_if(hand.begin(), hand.end(),
@@ -233,41 +233,6 @@ namespace open_spiel
 
 #pragma region Apply Action
 
-    /**
-     * @brief Applies the given action to the current game state.
-     * @param move The action to apply to the state.
-     *
-     * @details The actions vary depending on the current game phase:
-     *
-     * **Phase-specific actions:**
-     * - Dealing phase: distribute cards to players and the dog
-     * - Bidding phase: players bid in turn
-     * - DeclaringSlam phase: the taker declares whether they intend to make a slam
-     * - DeclaringPoignee phase: players declare whether they have a poignee
-     * - Playing phase: players play cards in turn
-     *
-     * **Action value ranges:**
-     *
-     * Card actions (0-77):
-     * - 0-13: Hearts cards
-     * - 14-27: Diamonds cards
-     * - 28-41: Clubs cards
-     * - 42-55: Spades cards
-     * - 56-77: Trump cards
-     *
-     * Bidding actions (78-82):
-     * - 78: Bid Pass
-     * - 79: Bid Small
-     * - 80: Bid Guard
-     * - 81: Bid Guard Without
-     * - 82: Bid Guard Against
-     *
-     * Declaration actions (83-86):
-     * - 83: Declare No Poignee
-     * - 84: Declare Poignee
-     * - 85: Declare No Slam
-     * - 86: Declare Slam
-     */
     void FrenchTarotState::DoApplyAction(Action move)
     {
       switch (phase_)
@@ -282,7 +247,7 @@ namespace open_spiel
         ApplyActionSlam(static_cast<Declare>(move));
         break;
       case Phase::DeclaringPoignee:
-        ApplyActionDog(static_cast<Card>(move));
+        ApplyActionDiscard(static_cast<Card>(move));
         break;
       case Phase::Playing:
         ApplyActionPlay(static_cast<Card>(move));
@@ -295,34 +260,57 @@ namespace open_spiel
 
     void FrenchTarotState::ApplyActionBid(Bid bid) const
     {
-      if (bid < Bid::Pass || bid > Bid::GuardAgainst)
-        return SpielFatalError("Invalid bid action");
-      if (bid != Bid::Pass)
-      {
-      }
+      // TODO Apply Bidding
     }
 
-    void FrenchTarotState::ApplyActionDog(Card card) const {}
+    void FrenchTarotState::ApplyActionDiscard(Card card) const
+    {
+      // TODO Apply Discarding
+    }
 
-    void FrenchTarotState::ApplyActionSlam(Declare declare) const {}
+    void FrenchTarotState::ApplyActionSlam(Declare declare) const
+    {
+      // TODO Apply Slam
+    }
 
-    void FrenchTarotState::ApplyActionHandful(Declare declare) const {}
+    void FrenchTarotState::ApplyActionHandful(Declare declare) const
+    {
+      // TODO Apply Handful
+    }
 
-    void FrenchTarotState::ApplyActionPlay(Card card) const {}
+    void FrenchTarotState::ApplyActionPlay(Card card) const
+    {
+      // TODO Apply Playing
+    }
 
 #pragma endregion
 
 #pragma region Chance Outcomes
 
-    ActionsAndProbs FrenchTarotState::ChanceOutcomes() const {}
+    ActionsAndProbs FrenchTarotState::ChanceOutcomes() const
+    {
+      // TODO
+    }
 
-    ActionsAndProbs FrenchTarotState::ChanceBidActions() {}
+    ActionsAndProbs FrenchTarotState::ChanceBidActions()
+    {
+      // TODO
+    }
 
-    ActionsAndProbs FrenchTarotState::ChanceDogActions() {}
+    ActionsAndProbs FrenchTarotState::ChanceDiscardActions()
+    {
+      // TODO
+    }
 
-    ActionsAndProbs FrenchTarotState::ChanceSlamActions() {}
+    ActionsAndProbs FrenchTarotState::ChanceSlamActions()
+    {
+      // TODO
+    }
 
-    ActionsAndProbs FrenchTarotState::ChanceHandfulActions() {}
+    ActionsAndProbs FrenchTarotState::ChanceHandfulActions()
+    {
+      // TODO
+    }
 
 #pragma endregion
 
@@ -340,6 +328,11 @@ namespace open_spiel
     {
       // TODO: Implement the actual scoring logic based on the rules of French Tarot.
       return std::make_pair(0.0, false);
+    }
+
+    double FrenchTarotState::TotalScore() const
+    {
+        return 0.0;
     }
 
     void FrenchTarotState::SettleFool() const {
@@ -461,7 +454,7 @@ namespace open_spiel
         else
         {
           absl::StrAppend(&card_str, kTrumpStr[action - kCardsPerSuit * 4]);
-          absl::StrAppend(&card_str, kSuitsStr[CardSuit::Trumps]);
+          absl::StrAppend(&card_str, kSuitsStr[Suit::Trumps]);
         }
         return absl::StrCat("[", player, ", ", card_str, "]");
       }
@@ -610,21 +603,24 @@ namespace open_spiel
 
       cards_.push_back(std::make_pair(player, card));
 
-      if (card.Suit() == CardSuit::Trumps &&
-          card.Rank() == CardRank::Fool)
+      auto card_rank = card.Rank_();
+      auto card_suit = card.Suit_();
+
+      if (card_suit == Suit::Trumps &&
+          card_rank == Rank::Fool)
         return;
 
       if (leader_ == kInvalidPlayer)
       {
         leader_ = player;
         winner_ = player;
-        suit_ = card.Suit();
+        suit_ = card_suit;
       }
 
-      if (cards_[winner_].second < card)
+      if (card > cards_[winner_].second)
       {
         winner_ = player;
-        suit_ = card.Suit();
+        suit_ = card_suit;
       }
     }
 
@@ -633,15 +629,15 @@ namespace open_spiel
       if (cards_.empty())
         return true;
 
-      auto suit_led = SuitLed();
-      auto other_suit = other.Suit();
+      auto suit_led = FollowSuit();
+      auto other_suit = other.Suit_();
 
-      if (other == kFoolCard)
+      if (other == kFool)
         return true;
 
-      if (suit_led == CardSuit::Trumps)
-        return other_suit == CardSuit::Trumps;
-      else if (other_suit == CardSuit::Trumps)
+      if (suit_led == Suit::Trumps)
+        return other_suit == Suit::Trumps;
+      else if (other_suit == Suit::Trumps)
         return true;
 
       if (other_suit == suit_led)
@@ -652,9 +648,11 @@ namespace open_spiel
 
     void Trick::ReplaceFool(Player player, Card card)
     {
+      if (!fool_)
+        return;
       for (auto &p : cards_)
       {
-        if (p.first == player && p.second == 0)
+        if (p.first == player && p.second == kFool)
         {
           p.second = card;
           return;
@@ -682,9 +680,10 @@ namespace open_spiel
 
         if (card >= 0 && card < kDeckSize)
         {
-          auto rank = card.Suit() == CardSuit::Trumps ? card.Rank() - 56 : card.Rank();
+          auto suit = card.Suit_();
+          auto rank = card.Rank_();
           result += kRankStr[rank];
-          result += kSuitsStr[card.Suit()];
+          result += kSuitsStr[suit];
           result += "|";
         }
         else

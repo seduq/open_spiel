@@ -2,7 +2,7 @@
 import numpy as np
 import pyspiel  # type: ignore
 from enum import Enum, EnumMeta
-from typing import List, Literal, Optional, Set, Tuple, Dict
+from typing import Any, List, Literal, Optional, Set, Tuple, Dict
 from collections.abc import Sequence
 from absl import app
 from absl import flags
@@ -263,11 +263,13 @@ _MIN_NUM_PLAYERS = 3
 _DECK_SIZE = 78
 _DOG_SIZE = 6
 _DOG_ID = 4
+_SLAM = 1
 _DECK = frozenset(list(range(_DECK_SIZE)))
 _NUM_TRICKS = {
     _MIN_NUM_PLAYERS: 24,
     _MAX_NUM_PLAYERS: 18
 }
+_HAND_SIZE = _NUM_TRICKS
 _CARDS_PER_SUIT = 14
 _BID_MULTIPLIERS = {
     Bid.PASS: 0,
@@ -312,15 +314,13 @@ _POINTS_REQUIRED_PER_BOUTS = [
 # ===============
 # Tensor Constants
 # ===============
-_TENSOR_TRICK = 7
+_TENSOR_TRICK = {
+    3: 5,
+    4: 7
+}
 _TENSOR_DEAL = _DECK_SIZE
-_TENSOR_BID = _DEFAULT_NUM_PLAYERS
 _TENSOR_DOG = _DOG_SIZE
-_TENSOR_DECLARE_SLAM = 1
-_TENSOR_DECLARE_HANDFUL = _DEFAULT_NUM_PLAYERS
-_TENSOR_DECLARATIONS = _TENSOR_DECLARE_HANDFUL + _TENSOR_DECLARE_SLAM
-_BASE_TENSOR_SIZE = (_TENSOR_DEAL + _TENSOR_BID + _TENSOR_DOG +
-                _TENSOR_DECLARATIONS)
+_BASE_TENSOR_SIZE = (_TENSOR_DEAL + _TENSOR_DOG)
 
 # Game is consist of 5 phase actions
 # 1. Dealing of 78 cards
@@ -349,7 +349,7 @@ _GAME_TYPE = pyspiel.GameType(
     provides_observation_string=True,
     provides_observation_tensor=True,
     parameter_specification={
-        "players": _DEFAULT_NUM_PLAYERS,
+        "players": _MIN_NUM_PLAYERS,
     },
 )
 
@@ -390,10 +390,11 @@ class FrenchTarotGame(pyspiel.Game):
         super().__init__(_GAME_TYPE, _GAME_INFO, params or dict())
         self._DEFAULT_OBS_TYPE = pyspiel.IIGObservationType(
             perfect_recall=True)
-        if params:
-            players = params.get("players", _DEFAULT_NUM_PLAYERS)
+        game_parameters = self.get_parameters()
+        self.num_players_ = _DEFAULT_NUM_PLAYERS
+        if game_parameters:
+            players = game_parameters.get("players", _DEFAULT_NUM_PLAYERS)
             self.num_players_ = players
-            print(players, self.num_players())
 
     def new_initial_state(self):
         return FrenchTarotState(self)
@@ -403,6 +404,10 @@ class FrenchTarotGame(pyspiel.Game):
             iig_obs_type or self._DEFAULT_OBS_TYPE,
             self.num_players(),
             params)
+
+    # game.num_players() returning wrong value workaround
+    def num_players(self):
+        return self.num_players_
 
 
 class FrenchTarotState(pyspiel.State):
@@ -428,7 +433,6 @@ class FrenchTarotState(pyspiel.State):
         super().__init__(game)
         self._num_players = game.num_players()
         self._num_tricks = _NUM_TRICKS[self._num_players]
-        print(self._num_tricks, self._num_players)
         self.reset()
 
     def reset(self):
@@ -456,7 +460,7 @@ class FrenchTarotState(pyspiel.State):
         return pyspiel.PlayerId.CHANCE
 
     def _next_player(self) -> Player:
-        cards_per_deal = 3 if self._num_players == 4 else 4
+        cards_per_deal = 3 if self._num_players == _MAX_NUM_PLAYERS else 4
         cards_dealt = len(self._current.hand) % cards_per_deal
         bids = [p.bid for p in self.players if p.bid is not None]
         winner = self.trick.winner()
@@ -477,7 +481,7 @@ class FrenchTarotState(pyspiel.State):
                 return self.dog
 
         if (self._phase == Phase.BID and
-                len(bids) == _DEFAULT_NUM_PLAYERS):
+                len(bids) == self._num_players):
             self.taker = max(self.players, key=lambda p: p.bid or Bid.PASS)
             self.taker.name += "*"
             if (self.taker.bid == Bid.GUARD_AGAINST or
@@ -499,7 +503,7 @@ class FrenchTarotState(pyspiel.State):
             return self.taker
 
         if (self._phase == Phase.DECLARE_HANDFUL and
-                len(self._declares) == _DEFAULT_NUM_PLAYERS):
+                len(self._declares) == self._num_players):
             self._phase = Phase.PLAY
             return self.taker
 
@@ -517,7 +521,7 @@ class FrenchTarotState(pyspiel.State):
                 return winner
 
         current_index = self.players.index(self._current)
-        next_index = (current_index + 1) % _DEFAULT_NUM_PLAYERS
+        next_index = (current_index + 1) % self._num_players
         return self.players[next_index]
 
     def _legal_actions(self, player: int) -> List[int]:
@@ -609,8 +613,9 @@ class FrenchTarotState(pyspiel.State):
                 card.rank != Rank.KING]
 
     def _legal_actions_slam(self, player: int) -> List[int]:
-        if self.players[player] == self.taker:
-            return [Declaration.DECLARE_NO_SLAM, Declaration.DECLARE_SLAM]
+        # Disabled for now, as slam declaration is very rare
+        # if self.players[player] == self.taker:
+        #     return [Declaration.DECLARE_NO_SLAM, Declaration.DECLARE_SLAM]
         return [Declaration.DECLARE_NO_SLAM]
 
     def _legal_actions_handful(self, player: int) -> List[int]:
@@ -906,13 +911,27 @@ class FrenchTarotObserver(pyspiel.Observer):
         assert _MIN_NUM_PLAYERS <= num_players <= _MAX_NUM_PLAYERS
         del params
         self.num_players = num_players
-        self.hand_size = _NUM_TRICKS[num_players]
-        self.size = _BASE_TENSOR_SIZE + self.hand_size * _TENSOR_TRICK
+        self.hand_size = _HAND_SIZE[num_players]
+
+        self.size = _BASE_TENSOR_SIZE # Deal + Discard
+        self.size += self.num_players # Players bids
+        self.size += num_players + _SLAM  # Declarations handfuls + slam
+        self.size += self.hand_size * _TENSOR_TRICK[num_players] # Tricks
         self.tensor = np.zeros(self.size, np.float32)
         self.dict = {}
 
+        pieces: List[Tuple[str, Any, Tuple[int, ...]]] = [(
+            "player",
+            self.num_players,
+            (num_players,),
+        )]
+
         if iig_obs_type.private_info == pyspiel.PrivateInfoType.SINGLE_PLAYER:
-            pass
+            pieces.append((
+                "hand",
+                self.hand_size,
+                (_DECK_SIZE,),
+            ))
         if iig_obs_type.public_info:
             if iig_obs_type.perfect_recall:
                 pass

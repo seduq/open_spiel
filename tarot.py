@@ -7,7 +7,6 @@ from absl import app
 def main(_):
     game = pyspiel.load_game("python_french_tarot", {"players": 3})
     state = game.new_initial_state()
-    print(state.num_players())
     while not state.is_terminal():
         actions = state.legal_actions()
         player = state.current_player()
@@ -18,8 +17,8 @@ def main(_):
             action = np.random.choice(actions)
         # print(f"Action: {state.action_to_string(action)}")
         state.apply_action(action)
-    # print("=" * 30)
-    # print(state)
+    print("=" * 30)
+    print(state)
 
 
 if __name__ == "__main__":

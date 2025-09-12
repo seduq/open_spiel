@@ -47,8 +47,8 @@ namespace open_spiel
     inline constexpr const int kCardsPerSuit = 14;
     inline constexpr const int kCardsOfTrump = 22;
     inline constexpr const int kNumSuits = 5;
-    inline constexpr const int kFool = 56;
-    const Card kFoolCard = Card(kFool);
+    inline constexpr const int kTrumpStart = 56;
+    const Card kFool = Card(kTrumpStart);
 
     inline constexpr const std::array<int, 2> kNumTricks = {
         24, // 3 players
@@ -75,7 +75,7 @@ namespace open_spiel
     {
       std::array<Card, kCardsOfTrump> trumps;
       for (int i = 0; i < kCardsOfTrump; ++i)
-        trumps[i] = Card(kFool + i);
+        trumps[i] = Card(kTrumpStart + i);
       return trumps;
     }();
 
@@ -83,7 +83,7 @@ namespace open_spiel
     {
       std::array<Card, kNumSuits> kings;
       for (int suit = 0; suit < kNumSuits - 1; ++suit)
-        kings[suit] = Card(suit * kCardsPerSuit + CardRank::King);
+        kings[suit] = Card(suit * kCardsPerSuit + Rank::King);
       return kings;
     }();
 
@@ -115,9 +115,10 @@ namespace open_spiel
 
 #pragma region Enums
 
-    enum CardSuit : int
+    enum Suit : int
     {
       Invalid = -1,
+
       Hearts = 0,
       Diamonds = 1,
       Clubs = 2,
@@ -125,7 +126,7 @@ namespace open_spiel
       Trumps = 4
     };
 
-    enum CardRank : int
+    enum Rank : int
     {
       Invalid = -1,
 
@@ -142,6 +143,7 @@ namespace open_spiel
     enum Bid : int
     {
       Invalid = -1,
+
       Pass = 78,
       Small = 79,
       Guard = 80,
@@ -153,6 +155,7 @@ namespace open_spiel
     enum Declare : int
     {
       Invalid = -1,
+
       NoPoignee = 83,
       Poignee = 84,
       NoSlam = 85,
@@ -180,16 +183,16 @@ namespace open_spiel
     public:
       Card(int id)
           : id_(id),
-            suit_(static_cast<CardSuit>(id / kCardsPerSuit)),
-            rank_(id < kFool ? id % kCardsPerSuit : id - kFool),
+            suit_(static_cast<Suit>(id / kCardsPerSuit)),
+            rank_(static_cast<Rank>(id < kTrumpStart ? id % kCardsPerSuit : id - kTrumpStart)),
             value_(CardPoints(id))
       {
         if (id < 0 || id >= kDeckSize)
           SpielFatalError("Invalid card id");
       }
       int Id() const { return id_; }
-      CardSuit Suit() const { return suit_; }
-      int Rank() const { return rank_; }
+      Suit Suit_() const { return suit_; }
+      Rank Rank_() const { return rank_; }
       float Value() const { return value_; }
 
       Card &operator=(const Card &other)
@@ -207,9 +210,9 @@ namespace open_spiel
       bool operator!=(const Card &other) const { return id_ != other.id_; }
       bool operator<(const Card &other) const
       {
-        if (other.suit_ == CardSuit::Trumps && this->suit_ != CardSuit::Trumps)
+        if (other.suit_ == Suit::Trumps && this->suit_ != Suit::Trumps)
           return true;
-        if (other.suit_ != CardSuit::Trumps && this->suit_ == CardSuit::Trumps)
+        if (other.suit_ != Suit::Trumps && this->suit_ == Suit::Trumps)
           return false;
         if (suit_ != other.suit_)
           return false;
@@ -217,9 +220,9 @@ namespace open_spiel
       }
       bool operator>(const Card &other) const
       {
-        if (other.suit_ == CardSuit::Trumps && this->suit_ != CardSuit::Trumps)
+        if (other.suit_ == Suit::Trumps && this->suit_ != Suit::Trumps)
           return false;
-        if (other.suit_ != CardSuit::Trumps && this->suit_ == CardSuit::Trumps)
+        if (other.suit_ != Suit::Trumps && this->suit_ == Suit::Trumps)
           return true;
         if (suit_ != other.suit_)
           return false;
@@ -231,28 +234,28 @@ namespace open_spiel
     private:
       Card();
       int id_;
-      int rank_;
+      Rank rank_;
       float value_;
-      CardSuit suit_;
+      Suit suit_;
       double CardPoints(Card card)
       {
         if (card.id_ < 0 || card.id_ >= kDeckSize)
           return 0.0;
         auto rank = card.rank_;
-        if (card.suit_ == CardSuit::Trumps &&
-            (card.rank_ == CardRank::Fool ||
-             card.rank_ == CardRank::Petit ||
-             card.rank_ == CardRank::World))
+        if (card.suit_ == Suit::Trumps &&
+            (card.rank_ == Rank::Fool ||
+             card.rank_ == Rank::Petit ||
+             card.rank_ == Rank::World))
           return 4.5;
-        else if (card.suit_ != CardSuit::Trumps)
+        else if (card.suit_ != Suit::Trumps)
         {
-          if (rank == CardRank::King)
+          if (rank == Rank::King)
             return 4.5;
-          else if (rank == CardRank::Queen)
+          else if (rank == Rank::Queen)
             return 3.5;
-          else if (rank == CardRank::Knight)
+          else if (rank == Rank::Knight)
             return 2.5;
-          else if (rank == CardRank::Jack)
+          else if (rank == Rank::Jack)
             return 1.5;
         }
         else
@@ -267,14 +270,14 @@ namespace open_spiel
     class Trick
     {
     public:
-      Trick(int num_players) : leader_(kInvalidPlayer), suit_(CardSuit::Invalid),
+      Trick(int num_players) : leader_(kInvalidPlayer), suit_(Suit::Invalid),
                                cards_({}), num_players_(num_players),
                                winner_(kInvalidPlayer), fool_(false) {}
       Trick(int num_players,
             Player leader,
             Card card) : leader_(leader), fool_(false),
                          num_players_(num_players), winner_(leader),
-                         suit_(static_cast<CardSuit>(card.Suit())),
+                         suit_(static_cast<Suit>(card.Suit_())),
                          cards_({std::make_pair(leader, card)}) {}
       Player Leader() const { return leader_; }
       Player Winner() const { return winner_; };
@@ -285,10 +288,10 @@ namespace open_spiel
             [](double sum, const auto &pair)
             { return sum + pair.second.Value(); });
         if (fool_)
-          points -= kFoolCard.Value();
+          points -= kFool.Value();
         return points;
       }
-      CardSuit SuitLed() const { return suit_; }
+      Suit FollowSuit() const { return suit_; }
       const std::vector<std::pair<Player, Card>> &Cards() const
       {
         return cards_;
@@ -304,7 +307,7 @@ namespace open_spiel
       bool fool_;
       Player leader_;
       Player winner_;
-      CardSuit suit_;
+      Suit suit_;
       int num_players_;
       std::vector<std::pair<Player, Card>> cards_;
     };
@@ -319,41 +322,132 @@ namespace open_spiel
       explicit FrenchTarotState(std::shared_ptr<const Game> game);
       FrenchTarotState(const FrenchTarotState &) = default;
 
+      // Open Spiel game overrides
       bool IsTerminal() const override { return phase_ == Phase::Terminal; };
       Player CurrentPlayer() const override;
       std::vector<Action> LegalActions() const override;
       std::vector<std::pair<Action, double>> ChanceOutcomes() const override;
-
       std::vector<double> Returns() const override;
+
+      // String representations
       std::string ActionToString(Player player, Action move) const override;
       std::string ToString() const override;
+
+      // Information state and observation string representations
       std::string InformationStateString(Player player) const override;
+      void InformationStateTensor(Player player, absl::Span<float> values) const override;
+
+      // Observation string and tensor representations
       std::string ObservationString(Player player) const override;
-      void InformationStateTensor(Player player,
-                                  absl::Span<float> values) const override;
-      void ObservationTensor(Player player,
-                             absl::Span<float> values) const override;
-      std::unique_ptr<State> Clone() const override;
+      void ObservationTensor(Player player, absl::Span<float> values) const override;
+
+      // Resample a state from the information state of the given player.
       std::unique_ptr<State> ResampleFromInfostate(
           int player_id, std::function<double()> rng) const override;
 
+      // Create a deep copy of this state object.
+      std::unique_ptr<State> Clone() const override;
+
     protected:
+      /**
+       * @brief Phase-specific actions
+       * @details
+       * The action applied depends on the current phase:
+       * - Dealing phase: distribute cards to players and the dog
+       * - Bidding phase: players bid in turn
+       * - DeclaringSlam phase: the taker declares whether they intend to make a slam
+       * - DeclaringPoignee phase: players declare whether they have a poignee
+       * - Playing phase: players play cards in turn
+       * @param move Action to apply
+       */
       void DoApplyAction(Action move) override;
+
+      /**
+       * @brief Compute the partial score with current tricks without declarations
+       * @details
+       * The score is computed as:
+       * (25 - |points - target| + petit_au_bout) * bid_multiplier
+       * @return std::pair<double, bool> (partial_score, is_taker_winner)
+       */
       std::pair<double, bool> PartialScore() const;
 
+      /**
+       * @brief Compute the total score with current tricks and bonuses
+       * @details
+       * The total score is computed as:
+       * total_score = partial_score + slam_bonus + handful_bonus
+       * @return double
+       */
+      double TotalScore() const;
+
+      /**
+       * @brief Bid a contract or pass
+       * @details
+       * Bidding actions (78-82):
+       * - 78: Bid Pass
+       * - 79: Bid Small
+       * - 80: Bid Guard
+       * - 81: Bid Guard Without
+       * - 82: Bid Guard Against
+       * @return std::vector<Action> Legal bid actions (78-82)
+       */
       std::vector<Action> LegalActionsBid() const;
-      std::vector<Action> LegalActionsDog() const;
+
+      /**
+       * @brief Discard a card from hand after petit or guard
+       * @details The taker must discard a card from their hand if the bid is petit or guard.
+       * The taker must not discard any kings or trumps
+       * @return std::vector<Action> Legal discard actions (0-77)
+       */
+      std::vector<Action> LegalActionsDiscard() const;
+
+      /**
+       * @brief Slam declaration actions (85-86):
+       * - 85: Declare No Slam
+       * - 86: Declare Slam
+       * @return std::vector<Action> Legal slam declaration actions (85-86)
+       */
       std::vector<Action> LegalActionsSlam() const;
+
+      /**
+       * @brief Handful declaration actions (87-88):
+       * @details
+       * Handful declaration actions (87-88):
+       * - 87: Declare No Poignee
+       * - 88: Declare Poignee
+       * @return std::vector<Action> Legal handful declaration actions (87-88)
+       */
       std::vector<Action> LegalActionsHandful() const;
+
+      /**
+       * @brief Play a card from hand
+       * @details
+       * Playing actions (0-77): Play a card from hand
+       * The player must follow suit if possible.
+       * If they cannot follow suit, they must play a trump if possible.
+       * Otherwise, they can play any card.
+       *
+      /**
+       * @brief Playing actions (0-77): Play a card from hand
+       * @details
+       * Card ids (0-77):
+       * - 0-13: Hearts cards
+       * - 14-27: Diamonds cards
+       * - 28-41: Clubs cards
+       * - 42-55: Spades cards
+       * - 56: The Fool
+       * - 57-77: Trump cards
+       * @return std::vector<Action> Legal playing actions (0-77)
+       */
       std::vector<Action> LegalActionsPlay() const;
 
       ActionsAndProbs ChanceBidActions();
-      ActionsAndProbs ChanceDogActions();
+      ActionsAndProbs ChanceDiscardActions();
       ActionsAndProbs ChanceSlamActions();
       ActionsAndProbs ChanceHandfulActions();
 
       void ApplyActionBid(Bid bid) const;
-      void ApplyActionDog(Card card) const;
+      void ApplyActionDiscard(Card card) const;
       void ApplyActionSlam(Declare declare) const;
       void ApplyActionHandful(Declare declare) const;
       void ApplyActionPlay(Card card) const;
@@ -387,16 +481,23 @@ namespace open_spiel
           return Bid::Invalid;
       };
 
-      Phase phase_;
-      Player current_player_;
-      Player taker_;
-      Bid bid_;
+      Card CardFromAction(Action action) const
+      {
+        return Card(action);
+      };
 
+      Phase phase_;
+      Player taker_;
+      Player current_player_;
+
+      Bid bid_;
       std::vector<Bid> player_bids_;
+
       std::vector<std::vector<Card>> player_hands_;
       std::vector<Player> know_cards_;
-      std::vector<Action> player_bids_;
+
       std::vector<Card> dog_;
+      std::vector<Card> legal_discard_;
       std::vector<Card> discard_;
 
       Trick current_trick_;
@@ -404,7 +505,7 @@ namespace open_spiel
       std::vector<Card> deck_;
 
       Declare slam_declare_;
-      std::vector<Declare> player_declares_;
+      std::vector<Declare> handful_declares_;
 
       Player fool_player_;
       Trick *fool_trick_;
